@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  oracle-web:
+    build: .
+    container_name: oracle-web
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./oracle.db:/app/oracle.db
+    environment:
+      - GMAIL_USER=${GMAIL_USER}
+      - GMAIL_PASS=${GMAIL_PASS}
+    restart: unless-stopped
