@@ -240,8 +240,8 @@ elif page == "Operations (SIP / Batches)":
         st.subheader("Log Fresh Cash (SIP / Top-Up)")
         st.write("Adding fresh cash into your strategy will accurately update your XIRR and Invested Capital.")
         
+        target_strat = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_sip")
         with st.form(key="sip_form"):
-            target_strat = st.selectbox("Select Strategy", [s.name for s in strategies])
             sip_date = st.date_input("Investment Date", value=datetime.date.today())
             amount = st.number_input("Total Cash Added (₹)", min_value=0.0, step=100.0)
             
@@ -277,8 +277,8 @@ elif page == "Operations (SIP / Batches)":
         st.subheader("Manual Trade Override (Correcting Mistakes)")
         st.write("Use this if you accidentally executed a wrong trade on your broker and need to update the system units to match reality, regardless of Donchian signals.")
         
+        target_strat_man = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_override")
         with st.form(key="manual_override_form"):
-            target_strat_man = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_override")
             override_date = st.date_input("Trade Date", value=datetime.date.today())
             
             strat_man = next(s for s in strategies if s.name == target_strat_man)
@@ -337,13 +337,12 @@ elif page == "Operations (SIP / Batches)":
         st.subheader("Withdraw Cash (SWP)")
         st.write("Log a withdrawal to take cash out of your strategy. This will record a SELL trade and a positive Cash Flow.")
         
+        target_strat_swp = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_swp")
+        strat_swp = next(s for s in strategies if s.name == target_strat_swp)
+        asset_to_sell = st.selectbox("Asset to Sell", [strat_swp.asset1, strat_swp.asset2], key="asset_swp")
+        
         with st.form(key="swp_form"):
-            target_strat_swp = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_swp")
             swp_date = st.date_input("Withdrawal Date", value=datetime.date.today(), key="swp_date")
-            
-            strat_swp = next(s for s in strategies if s.name == target_strat_swp)
-            
-            asset_to_sell = st.selectbox("Asset to Sell", [strat_swp.asset1, strat_swp.asset2])
             
             col1, col2 = st.columns(2)
             with col1:
@@ -453,6 +452,11 @@ elif page == "Ledger & History":
     cf_data = [{'Date': c.date, 'Amount': c.amount, 'Type': c.flow_type} for c in cashflows]
     cf_df = pd.DataFrame(cf_data)
     
+    net_cashflow = sum(c.amount for c in cashflows)
+    total_invested_cash = -net_cashflow
+    
+    st.markdown(f"**Total Net Capital Invested (Cash Inflows - Outflows):** ₹{total_invested_cash:,.2f}")
+    
     if not cf_df.empty:
         def color_amount(val):
             if pd.isna(val) or val == 0:
@@ -502,6 +506,11 @@ elif page == "Ledger & History":
     trade_df = pd.DataFrame(trade_data)
     
     if not trade_df.empty:
+        total_trade_value = sum(t['Total Value'] for t in trade_data)
+        total_realized_pnl = sum(t['Realized PnL'] for t in trade_data)
+        
+        st.markdown(f"**Gross Traded Value:** ₹{total_trade_value:,.2f} &nbsp;&nbsp;|&nbsp;&nbsp; **Total Realized PnL (All Time):** ₹{total_realized_pnl:,.2f}")
+        
         # Hide internal columns and make certain columns editable
         columns_config = {
             '_id': None, # Hide
