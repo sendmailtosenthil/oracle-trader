@@ -449,7 +449,7 @@ elif page == "Ledger & History":
     # Render CashFlows
     st.subheader("Cash Flows (Investments & Withdrawals)")
     cashflows = db.query(CashFlow).filter(CashFlow.strategy_id == strat_ledger.id).order_by(CashFlow.date.asc()).all()
-    cf_data = [{'Date': c.date, 'Amount': c.amount, 'Type': c.flow_type} for c in cashflows]
+    cf_data = [{'_id': c.id, 'Date': c.date, 'Amount': c.amount, 'Type': c.flow_type} for c in cashflows]
     cf_df = pd.DataFrame(cf_data)
     
     net_cashflow = sum(c.amount for c in cashflows)
@@ -458,15 +458,43 @@ elif page == "Ledger & History":
     st.markdown(f"**Total Net Capital Invested (Cash Inflows - Outflows):** ₹{total_invested_cash:,.2f}")
     
     if not cf_df.empty:
+        cf_columns_config = {
+            '_id': None, # Hide
+            'Date': st.column_config.DatetimeColumn("Date", required=True),
+            'Amount': st.column_config.NumberColumn("Amount", required=True, step=0.01),
+            'Type': st.column_config.SelectboxColumn("Type", options=["INITIAL", "SIP", "SWP", "RESIDUAL"], required=True)
+        }
+
         def color_amount(val):
             if pd.isna(val) or val == 0:
                 return ''
             return 'color: #00FF00' if val > 0 else 'color: #FF0000'
             
-        cf_styled = cf_df.style.map(color_amount, subset=['Amount']).format({"Amount": "{:.2f}"})
-        st.dataframe(cf_styled, use_container_width=True, hide_index=True)
+        cf_styled = cf_df.style.map(color_amount, subset=['Amount'])
+        
+        edited_cfs = st.data_editor(
+            cf_styled,
+            column_config=cf_columns_config,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="cf_editor"
+        )
+        
+        if st.button("Save Cash Flow Changes", type="primary", key="save_cf"):
+            db.query(CashFlow).filter(CashFlow.strategy_id == strat_ledger.id).delete()
+            for _, row in edited_cfs.iterrows():
+                db.add(CashFlow(
+                    strategy_id=strat_ledger.id,
+                    date=row['Date'],
+                    amount=float(row['Amount']),
+                    flow_type=row['Type']
+                ))
+            db.commit()
+            st.success("Cash Flows updated successfully!")
+            st.rerun()
     else:
-        st.dataframe(cf_df, use_container_width=True, hide_index=True)
+        st.info("No cash flows recorded yet.")
     
     # Render Trades
     st.subheader("Trade Ledger")
