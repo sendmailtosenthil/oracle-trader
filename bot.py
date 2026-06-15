@@ -165,9 +165,8 @@ def run_bot():
     schedule.every(30).minutes.do(check_intraday_signals)
     
     # Daily Morning Email
-    # schedule uses local system time unless we write custom logic for IST. 
-    # For a VPS in UTC, 8:30 AM IST = 3:00 AM UTC.
-    schedule.every().day.at("03:00").do(send_daily_summary)
+    # Passing the timezone explicitly so it always triggers at 8:30 AM IST regardless of the VPS OS clock
+    schedule.every().day.at("08:30", "Asia/Kolkata").do(send_daily_summary)
     
     # Run once on startup just to verify
     check_intraday_signals()
