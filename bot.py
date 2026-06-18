@@ -161,8 +161,8 @@ def send_daily_summary():
 def run_bot():
     print("Starting Oracle Bot Daemon...")
     
-    # Intraday Checks every 30 minutes
-    schedule.every(30).minutes.do(check_intraday_signals)
+    # Intraday Checks every 5 minutes for near real-time alerts
+    schedule.every(5).minutes.do(check_intraday_signals)
     
     # Daily Morning Email
     # Passing the timezone explicitly so it always triggers at 8:30 AM IST regardless of the VPS OS clock
