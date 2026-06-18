@@ -42,8 +42,8 @@ def check_intraday_signals():
     if now_ist.weekday() >= 5:
         return
         
-    # Only run between 9:30 AM and 3:30 PM
-    if not (now_ist.time() >= datetime.time(9, 30) and now_ist.time() <= datetime.time(15, 30)):
+    # Only run between 9:30 AM and 3:35 PM
+    if not (now_ist.time() >= datetime.time(9, 30) and now_ist.time() <= datetime.time(15, 35)):
         return
         
     print(f"[{now_ist.strftime('%H:%M:%S')}] Running intraday check...")
