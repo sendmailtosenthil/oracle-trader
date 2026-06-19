@@ -157,6 +157,15 @@ if page == "Dashboard":
         col6.metric("XIRR", f"{strat_xirr:.2f}%")
         
         pending = db.query(PendingSwitch).filter(PendingSwitch.strategy_id == strat.id, PendingSwitch.status == 'PENDING').first()
+        
+        # Auto-heal: If user manually executed the switch via the Ledger, auto-complete the pending alert
+        if pending:
+            from_port = next(p for p in portfolios if p.asset == pending.from_asset)
+            if from_port.units <= 0.0001:
+                pending.status = 'COMPLETED'
+                db.commit()
+                pending = None
+                
         if pending:
             target_ticker = strat.asset1 if pending.to_asset == 'ASSET1' else strat.asset2
             st.error(f"🚨 PENDING BATCH SWITCH: Switch all funds to **{target_ticker}**! Go to Operations to execute.")
