@@ -6,7 +6,7 @@ import smtplib
 import os
 from email.message import EmailMessage
 
-from database import SessionLocal, Strategy, PendingSwitch, Portfolio, CashFlow
+from database import SessionLocal, Strategy, PendingSwitch, Portfolio, CashFlow, init_db
 from donchian import evaluate_donchian_intraday
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -37,14 +37,11 @@ def send_email(html_content, subject):
 
 def check_intraday_signals():
     now_ist = datetime.datetime.now(IST)
-    
-    # Only run on weekdays
     if now_ist.weekday() >= 5:
         return
         
-    # Only run between 9:30 AM and 3:35 PM
-    if not (now_ist.time() >= datetime.time(9, 30) and now_ist.time() <= datetime.time(15, 35)):
-        return
+    # Only run End-of-Day
+    # Time checking is now handled by the schedule library naturally
         
     print(f"[{now_ist.strftime('%H:%M:%S')}] Running intraday check...")
     
@@ -160,9 +157,10 @@ def send_daily_summary():
 
 def run_bot():
     print("Starting Oracle Bot Daemon...")
+    init_db() # CRITICAL: Must initialize database to bind SessionLocal before using it!
     
-    # Intraday Checks every 5 minutes for near real-time alerts
-    schedule.every(5).minutes.do(check_intraday_signals)
+    # End of Day Scan at 3:35 PM IST
+    schedule.every().day.at("15:35", "Asia/Kolkata").do(check_intraday_signals)
     
     # Daily Morning Email
     # Passing the timezone explicitly so it always triggers at 8:30 AM IST regardless of the VPS OS clock

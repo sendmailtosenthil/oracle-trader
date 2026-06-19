@@ -54,7 +54,14 @@ def get_latest_intraday_data(ticker):
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.datetime.now(ist)
     
-    # Intraday scanning requires using the absolute latest 1-minute data available
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        # Before 3:30 PM, exclude today's date from the dataset
+        today_str = now.strftime('%Y-%m-%d')
+        close = close[close.index.strftime('%Y-%m-%d') != today_str]
+        if close.empty:
+            return None, None
+            
+    # EOD scanning uses the latest available closed data
     last_dt = close.index[-1]
     return float(close.iloc[-1]), pd.to_datetime(last_dt.strftime('%Y-%m-%d'))
 

@@ -51,6 +51,10 @@ def get_reference_close(ticker):
     
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.datetime.now(ist)
+    
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        today_str = now.strftime('%Y-%m-%d')
+        df = df[df.index.strftime('%Y-%m-%d') != today_str]
         
     if df.empty: return 0.0
     close_series = df['Close']
@@ -79,7 +83,10 @@ def get_asset_metrics(ticker):
         
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.datetime.now(ist)
-        
+    
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        today_str = now.strftime('%Y-%m-%d')
+        daily_close = daily_close[daily_close.index.strftime('%Y-%m-%d') != today_str]
     if len(daily_close) >= 2:
         return float(daily_close.iloc[-1]), float(daily_close.iloc[-2])
     elif len(daily_close) == 1:
