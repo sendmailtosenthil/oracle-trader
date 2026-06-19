@@ -6,7 +6,7 @@ import smtplib
 import os
 from email.message import EmailMessage
 
-from database import SessionLocal, Strategy, PendingSwitch, Portfolio, CashFlow, init_db
+from database import Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
 from donchian import evaluate_donchian_intraday
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -45,7 +45,7 @@ def check_intraday_signals():
         
     print(f"[{now_ist.strftime('%H:%M:%S')}] Running intraday check...")
     
-    db = SessionLocal()
+    db = next(get_db())
     strategies = db.query(Strategy).all()
     
     for strat in strategies:
@@ -111,7 +111,7 @@ def check_intraday_signals():
 
 def send_daily_summary():
     print("Generating daily 8:30 AM summary...")
-    db = SessionLocal()
+    db = next(get_db())
     strategies = db.query(Strategy).all()
     
     html = f"<h2>Daily Portfolio Summary ({datetime.datetime.now(IST).strftime('%Y-%m-%d')})</h2>"
