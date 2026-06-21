@@ -6,7 +6,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - ./oracle.db:/app/oracle.db
+      - .:/app
     environment:
       - GMAIL_USER=${GMAIL_USER}
       - GMAIL_PASS=${GMAIL_PASS}
