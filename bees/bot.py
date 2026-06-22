@@ -6,8 +6,8 @@ import smtplib
 import os
 from email.message import EmailMessage
 
-from database import Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
-from donchian import evaluate_donchian_intraday
+from bees.database import Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
+from bees.donchian import evaluate_donchian_intraday
 
 IST = pytz.timezone('Asia/Kolkata')
 

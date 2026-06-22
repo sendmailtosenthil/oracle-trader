@@ -1,5 +1,5 @@
 import streamlit as st
-from database import get_db, User, hash_password
+from bees.database import get_db, User, hash_password
 
 def require_auth():
     if "authenticated" not in st.session_state:

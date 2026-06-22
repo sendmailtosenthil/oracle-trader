@@ -6,8 +6,12 @@ if [ -f "oracle.db" ]; then
     echo "Database backup created securely."
 fi
 
+# Ensure the project root is importable so the `bees` package resolves
+# (Streamlit only adds the script's own directory to sys.path by default).
+export PYTHONPATH="$(pwd):${PYTHONPATH}"
+
 # Start the background bot daemon
-python bot.py &
+python -m bees.bot &
 
 # Start the Streamlit Web Application
-streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+streamlit run bees/app.py --server.port 8501 --server.address 0.0.0.0

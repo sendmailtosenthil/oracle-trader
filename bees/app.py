@@ -7,9 +7,9 @@ import yfinance as yf
 import pytz
 import requests
 
-from database import get_db, Strategy, Portfolio, CashFlow, PendingSwitch, Trade, BrokerConfig, recalculate_portfolio_from_ledger
-from auth import require_auth, logout
-from donchian import evaluate_donchian_intraday
+from bees.database import get_db, Strategy, Portfolio, CashFlow, PendingSwitch, Trade, BrokerConfig, recalculate_portfolio_from_ledger
+from bees.auth import require_auth, logout
+from bees.donchian import evaluate_donchian_intraday
 
 st.set_page_config(page_title="Project Oracle", layout="wide")
 
