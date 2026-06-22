@@ -21,4 +21,4 @@ EXPOSE 8501
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-CMD ["./entrypoint.sh"]
+CMD ["bash", "entrypoint.sh"]
