@@ -46,6 +46,8 @@ class Trade(Base):
     trade_type = Column(String, nullable=False) # 'BUY' or 'SELL'
     units = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
+    charges = Column(Float, default=0.0) # total Zerodha charges (STT, txn, GST, stamp, DP, pledge)
+    charges_breakdown = Column(String, nullable=True) # JSON itemization of `charges`
 
 class PendingSwitch(Base):
     __tablename__ = 'pending_switches'

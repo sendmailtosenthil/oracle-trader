@@ -4,6 +4,7 @@ import datetime
 import streamlit as st
 
 from bees.database import Strategy, CashFlow, PendingSwitch, Trade, recalculate_portfolio_from_ledger
+from bees.services.charges import compute_trade_charges, ticker_for
 
 
 def render(db, strategies):
@@ -57,8 +58,18 @@ def _render_batch_switches(db):
                     if units_sold > 0 and units_bought > 0:
                         # Log Exact Trades
                         date_obj = datetime.datetime.combine(exec_date, datetime.datetime.min.time())
-                        db.add(Trade(strategy_id=strat.id, date=date_obj, asset=switch.from_asset, trade_type='SELL', units=units_sold, price=sell_price))
-                        db.add(Trade(strategy_id=strat.id, date=date_obj, asset=switch.to_asset, trade_type='BUY', units=units_bought, price=buy_price))
+
+                        # Does this execution complete the full switch? If so the
+                        # final BUY also carries the pledge request charge.
+                        will_complete = (switch.units_sold_so_far + units_sold) >= switch.total_units_to_sell * 0.999
+
+                        sell_ticker = ticker_for(strat, switch.from_asset)
+                        buy_ticker = ticker_for(strat, switch.to_asset)
+                        sell_charges, sell_bd = compute_trade_charges(sell_ticker, 'SELL', units_sold, sell_price)
+                        buy_charges, buy_bd = compute_trade_charges(buy_ticker, 'BUY', units_bought, buy_price, include_pledge=will_complete)
+
+                        db.add(Trade(strategy_id=strat.id, date=date_obj, asset=switch.from_asset, trade_type='SELL', units=units_sold, price=sell_price, charges=sell_charges, charges_breakdown=sell_bd))
+                        db.add(Trade(strategy_id=strat.id, date=date_obj, asset=switch.to_asset, trade_type='BUY', units=units_bought, price=buy_price, charges=buy_charges, charges_breakdown=buy_bd))
 
                         # Log any cash remainder / infusion to keep XIRR perfect
                         sold_val = units_sold * sell_price
@@ -68,7 +79,7 @@ def _render_batch_switches(db):
                             db.add(CashFlow(strategy_id=strat.id, date=date_obj, amount=net_cash, flow_type='RESIDUAL'))
 
                         switch.units_sold_so_far += units_sold
-                        if switch.units_sold_so_far >= switch.total_units_to_sell * 0.999:  # Account for floating point
+                        if will_complete:
                             switch.status = 'COMPLETED'
                             st.success("Switch fully completed!")
                         else:
@@ -105,9 +116,11 @@ def _render_sip(db, strategies):
 
                 # Log the Trades
                 if asset1_units > 0:
-                    db.add(Trade(strategy_id=strat.id, date=date_obj, asset='ASSET1', trade_type='BUY', units=asset1_units, price=asset1_price))
+                    c1, bd1 = compute_trade_charges(strat.asset1, 'BUY', asset1_units, asset1_price)
+                    db.add(Trade(strategy_id=strat.id, date=date_obj, asset='ASSET1', trade_type='BUY', units=asset1_units, price=asset1_price, charges=c1, charges_breakdown=bd1))
                 if asset2_units > 0:
-                    db.add(Trade(strategy_id=strat.id, date=date_obj, asset='ASSET2', trade_type='BUY', units=asset2_units, price=asset2_price))
+                    c2, bd2 = compute_trade_charges(strat.asset2, 'BUY', asset2_units, asset2_price)
+                    db.add(Trade(strategy_id=strat.id, date=date_obj, asset='ASSET2', trade_type='BUY', units=asset2_units, price=asset2_price, charges=c2, charges_breakdown=bd2))
 
                 # Log cash flow for XIRR (negative means money left our pocket)
                 cf = CashFlow(strategy_id=strat.id, date=date_obj, amount=-amount, flow_type='SIP')
@@ -158,16 +171,20 @@ def _render_manual_override(db, strategies):
             bought_val = 0.0
 
             if units_sold_1 > 0:
-                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET1', trade_type='SELL', units=units_sold_1, price=price_sold_1))
+                c, bd = compute_trade_charges(strat_man.asset1, 'SELL', units_sold_1, price_sold_1)
+                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET1', trade_type='SELL', units=units_sold_1, price=price_sold_1, charges=c, charges_breakdown=bd))
                 sold_val += units_sold_1 * price_sold_1
             if units_bought_1 > 0:
-                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET1', trade_type='BUY', units=units_bought_1, price=price_bought_1))
+                c, bd = compute_trade_charges(strat_man.asset1, 'BUY', units_bought_1, price_bought_1)
+                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET1', trade_type='BUY', units=units_bought_1, price=price_bought_1, charges=c, charges_breakdown=bd))
                 bought_val += units_bought_1 * price_bought_1
             if units_sold_2 > 0:
-                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET2', trade_type='SELL', units=units_sold_2, price=price_sold_2))
+                c, bd = compute_trade_charges(strat_man.asset2, 'SELL', units_sold_2, price_sold_2)
+                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET2', trade_type='SELL', units=units_sold_2, price=price_sold_2, charges=c, charges_breakdown=bd))
                 sold_val += units_sold_2 * price_sold_2
             if units_bought_2 > 0:
-                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET2', trade_type='BUY', units=units_bought_2, price=price_bought_2))
+                c, bd = compute_trade_charges(strat_man.asset2, 'BUY', units_bought_2, price_bought_2)
+                db.add(Trade(strategy_id=strat_man.id, date=date_obj, asset='ASSET2', trade_type='BUY', units=units_bought_2, price=price_bought_2, charges=c, charges_breakdown=bd))
                 bought_val += units_bought_2 * price_bought_2
 
             net_cash = sold_val - bought_val
@@ -204,7 +221,8 @@ def _render_swp(db, strategies):
 
                 # Log Sell Trade
                 asset_code = 'ASSET1' if asset_to_sell == strat_swp.asset1 else 'ASSET2'
-                db.add(Trade(strategy_id=strat_swp.id, date=date_obj, asset=asset_code, trade_type='SELL', units=units_to_sell, price=sell_price))
+                swp_charges, swp_bd = compute_trade_charges(asset_to_sell, 'SELL', units_to_sell, sell_price)
+                db.add(Trade(strategy_id=strat_swp.id, date=date_obj, asset=asset_code, trade_type='SELL', units=units_to_sell, price=sell_price, charges=swp_charges, charges_breakdown=swp_bd))
 
                 # Log Cash Flow (Positive = Withdrawal)
                 db.add(CashFlow(strategy_id=strat_swp.id, date=date_obj, amount=withdrawal_amount, flow_type='SWP'))
