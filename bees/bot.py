@@ -2,38 +2,12 @@ import schedule
 import time
 import datetime
 import pytz
-import smtplib
-import os
-from email.message import EmailMessage
 
 from bees.database import Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
 from bees.donchian import evaluate_donchian_intraday
+from bees.notifications import send_email
 
 IST = pytz.timezone('Asia/Kolkata')
-
-def send_email(html_content, subject):
-    sender_email = os.environ.get('GMAIL_USER')
-    sender_password = os.environ.get('GMAIL_PASS')
-    receiver_email = 'sendmailtosenthil@gmail.com'
-    
-    if not sender_email or not sender_password:
-        print("Email credentials missing. Please set GMAIL_USER and GMAIL_PASS.")
-        return
-        
-    msg = EmailMessage()
-    msg['Subject'] = subject
-    msg['From'] = sender_email
-    msg['To'] = receiver_email
-    msg.set_content("Please enable HTML to view this report.")
-    msg.add_alternative(html_content, subtype='html')
-    
-    try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(sender_email, sender_password)
-            smtp.send_message(msg)
-        print(f"Sent email: {subject}")
-    except Exception as e:
-        print(f"Failed to send email: {e}")
 
 def check_intraday_signals():
     now_ist = datetime.datetime.now(IST)
