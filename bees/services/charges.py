@@ -1,23 +1,28 @@
-"""Zerodha (NSE, delivery/ETF) trading-charge calculator.
+"""Zerodha (NSE, delivery/ETF) trading-charge calculator + reconciliation.
 
-All rates are module-level constants so they can be tuned against an actual
-Zerodha contract note. STT is ETF-category specific (equity ETF vs gold ETF).
+Rates are module-level constants so they can be tuned against an actual Zerodha
+contract note. STT is ETF-category specific (equity ETF vs gold ETF).
+
+Two charges are NOT pure per-trade and are assigned by reconcile_strategy_charges
+over the full ledger:
+  - DP charges: Rs.13.5 + GST, levied ONCE per instrument per day on the SELL
+    side (attached to that day's last sell of the instrument), exactly as Zerodha.
+  - Pledge request: Rs.30 + GST, levied ONCE per completed full switch, attached
+    to the last BUY that completes the switch (a switch may span a day or two).
 
 Stamp duty on securities is centrally unified (since 1 Jul 2020): 0.015% on the
 buy side, the same in every Indian state — so it is NOT state-dependent.
 
-Charge components (equity delivery / ETF, NSE):
+Per-trade base components (equity delivery / ETF, NSE):
   - Brokerage:            0 (Zerodha, delivery)
   - STT:                  ETF-category & side specific (see STT_RATES)
   - Exchange txn (NSE):   0.00297% of turnover, both sides
   - SEBI turnover fee:    Rs.10 / crore (0.0001%), both sides
   - Stamp duty:           0.015% of turnover, BUY only
   - GST:                  18% on (brokerage + exchange txn + SEBI)
-  - DP charges:           Rs.13.5 + GST, SELL only, per scrip
-  - Pledge request:       Rs.30 + GST, applied to the last BUY of a completed
-                          full switch (collateral pledge of the new holding)
 """
 import json
+from collections import defaultdict
 
 # --- Rates (edit to match your contract note) ---
 BROKERAGE = 0.0
@@ -25,8 +30,8 @@ EXCHANGE_TXN_RATE = 0.0000297      # 0.00297% (NSE cash/ETF)
 SEBI_RATE = 0.000001               # Rs.10 per crore = 0.0001%
 STAMP_DUTY_RATE_BUY = 0.00015      # 0.015% (central, buy only)
 GST_RATE = 0.18                    # 18%
-DP_CHARGE_BASE = 13.5              # + GST, per sell (per scrip / day)
-PLEDGE_CHARGE_BASE = 30.0          # + GST, per pledge request (per ISIN)
+DP_CHARGE_BASE = 13.5              # + GST, once per instrument per day (sell side)
+PLEDGE_CHARGE_BASE = 30.0          # + GST, once per completed switch (last buy)
 
 # STT is category-specific. Equity ETFs are taxed like equity-oriented fund
 # units (0.001% on sell only); gold ETFs attract no STT. Verify per contract note.
@@ -44,7 +49,7 @@ ETF_CATEGORY = {
 }
 DEFAULT_CATEGORY = 'equity_etf'
 
-# Round money to paise.
+
 def _r(x):
     return round(x, 2)
 
@@ -58,11 +63,21 @@ def category_for(ticker):
     return ETF_CATEGORY.get(ticker, DEFAULT_CATEGORY)
 
 
-def compute_trade_charges(ticker, trade_type, units, price, include_pledge=False):
-    """Return (total_charges, breakdown_json) for a single trade.
+def dp_charge():
+    """DP charge (Rs.13.5 + GST), once per instrument per day on the sell side."""
+    return _r(DP_CHARGE_BASE * (1 + GST_RATE))
 
-    trade_type: 'BUY' or 'SELL'. include_pledge adds the pledge request charge
-    (only meaningful on the BUY that completes a full switch).
+
+def pledge_charge():
+    """Pledge request charge (Rs.30 + GST), once per completed switch."""
+    return _r(PLEDGE_CHARGE_BASE * (1 + GST_RATE))
+
+
+def compute_base_charges(ticker, trade_type, units, price):
+    """Per-trade base charges (STT, exchange txn, SEBI, stamp duty, GST).
+
+    Excludes DP and pledge, which are day/switch-level and assigned by
+    reconcile_strategy_charges. Returns (total_base, breakdown_dict).
     """
     side = 'BUY' if trade_type == 'BUY' else 'SELL'
     turnover = float(units) * float(price)
@@ -74,8 +89,6 @@ def compute_trade_charges(ticker, trade_type, units, price, include_pledge=False
     sebi = turnover * SEBI_RATE
     stamp_duty = turnover * STAMP_DUTY_RATE_BUY if side == 'BUY' else 0.0
     gst = GST_RATE * (brokerage + exchange_txn + sebi)
-    dp = DP_CHARGE_BASE * (1 + GST_RATE) if side == 'SELL' else 0.0
-    pledge = PLEDGE_CHARGE_BASE * (1 + GST_RATE) if (include_pledge and side == 'BUY') else 0.0
 
     breakdown = {
         'brokerage': _r(brokerage),
@@ -84,14 +97,62 @@ def compute_trade_charges(ticker, trade_type, units, price, include_pledge=False
         'sebi': _r(sebi),
         'stamp_duty': _r(stamp_duty),
         'gst': _r(gst),
-        'dp': _r(dp),
-        'pledge': _r(pledge),
+        'dp': 0.0,
+        'pledge': 0.0,
     }
     total = _r(sum(breakdown.values()))
     breakdown['total'] = total
-    return total, json.dumps(breakdown)
+    return total, breakdown
 
 
-def pledge_charge():
-    """The pledge request charge (Rs.30 + GST), added once per completed switch."""
-    return _r(PLEDGE_CHARGE_BASE * (1 + GST_RATE))
+def reconcile_strategy_charges(db, strategy_id):
+    """Recompute and persist all charges for a strategy from the full ledger.
+
+    Deterministic and idempotent. Base charges per trade, plus:
+      - DP on each (instrument, day) group's last SELL,
+      - pledge on each trade the user has manually flagged (trade.pledge).
+    """
+    from bees.database import Strategy, Trade
+
+    strat = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strat:
+        return
+    trades = (db.query(Trade)
+              .filter(Trade.strategy_id == strategy_id)
+              .order_by(Trade.date.asc(), Trade.id.asc())
+              .all())
+
+    # 1. Base charges per trade (dp/pledge start at 0).
+    breakdowns = {}
+    for t in trades:
+        ticker = ticker_for(strat, t.asset)
+        _, bd = compute_base_charges(ticker, t.trade_type, t.units, t.price)
+        breakdowns[t.id] = bd
+
+    # 2. DP: one per (instrument, day) on the sell side -> that day's last sell.
+    dp = dp_charge()
+    sell_groups = defaultdict(list)
+    for t in trades:
+        if t.trade_type == 'SELL':
+            sell_groups[(t.asset, t.date.date())].append(t)
+    for group_trades in sell_groups.values():
+        last_sell = max(group_trades, key=lambda t: (t.date, t.id))
+        bd = breakdowns[last_sell.id]
+        bd['dp'] = dp
+        bd['total'] = _r(bd['total'] + dp)
+
+    # 3. Pledge: applied to any trade the user has manually flagged (a switch may
+    #    take a day or two; the user ticks the final buy that completes it).
+    pledge = pledge_charge()
+    for t in trades:
+        if getattr(t, 'pledge', False):
+            bd = breakdowns[t.id]
+            bd['pledge'] = _r(bd['pledge'] + pledge)
+            bd['total'] = _r(bd['total'] + pledge)
+
+    # 4. Persist.
+    for t in trades:
+        bd = breakdowns[t.id]
+        t.charges = bd['total']
+        t.charges_breakdown = json.dumps(bd)
+    db.commit()

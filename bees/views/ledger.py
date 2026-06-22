@@ -3,7 +3,7 @@ import pandas as pd
 import streamlit as st
 
 from bees.database import Portfolio, CashFlow, Trade, recalculate_portfolio_from_ledger
-from bees.services.charges import compute_trade_charges
+from bees.services.charges import reconcile_strategy_charges
 from bees.services.finance import realized_pnl_by_asset, realized_charges_by_asset
 from bees.services.market_data import get_asset_metrics
 
@@ -194,6 +194,7 @@ def _build_trade_rows(trades, strat_ledger):
             'Total Value': t.units * t.price,
             'Realized PnL': 0.0,
             'Charges': t.charges or 0.0,
+            'Pledge': bool(t.pledge),
             '_charges_breakdown': t.charges_breakdown,
         }
 
@@ -268,6 +269,7 @@ def _render_trade_ledger(db, strat_ledger):
         'Total Value': st.column_config.NumberColumn("Total Value", disabled=True, format="%.2f"),
         'Realized PnL': st.column_config.NumberColumn("Realized PnL", disabled=True, format="%.2f"),
         'Charges': st.column_config.NumberColumn("Charges", disabled=True, format="%.2f"),
+        'Pledge': st.column_config.CheckboxColumn("Pledge", help="Tick to add the pledge request charge (₹35.40) to this trade — e.g. the buy that completes a full switch."),
         '_charges_breakdown': None,  # Hide
     }
 
@@ -295,7 +297,7 @@ def _render_trade_ledger(db, strat_ledger):
 
         db.query(Trade).filter(Trade.strategy_id == strat_ledger.id).delete()
 
-        # Re-insert off-page trades unchanged (charges preserved verbatim)
+        # Re-insert off-page trades unchanged (preserve their pledge flag)
         for r in kept:
             db.add(Trade(
                 strategy_id=strat_ledger.id,
@@ -304,51 +306,30 @@ def _render_trade_ledger(db, strat_ledger):
                 trade_type='BUY' if 'BUY' in r['Action'] else 'SELL',
                 units=float(r['Units']),
                 price=float(r['Price']),
-                charges=r['Charges'],
-                charges_breakdown=r['_charges_breakdown']
+                pledge=bool(r['Pledge'])
             ))
 
-        # Original page rows by id, so we can preserve charges (incl. pledge) on
-        # rows that weren't actually changed, and recompute only edited/new ones.
-        orig_by_id = {r['_id']: r for r in page_rows}
-
-        # Re-insert the (possibly edited) current page rows
+        # Re-insert the (possibly edited) current page rows, honouring the Pledge checkbox
         for _, row in edited_trades.iterrows():
             if pd.isna(row['Date']) or pd.isna(row['Units']) or pd.isna(row['Price']):
                 continue  # skip blank/incomplete rows added in the editor
             asset_code = 'ASSET1' if row['Asset'] == strat_ledger.asset1 else 'ASSET2'
             action_code = 'BUY' if 'BUY' in row['Action'] else 'SELL'
-            units = float(row['Units'])
-            price = float(row['Price'])
-
-            rid = None if pd.isna(row['_id']) else int(row['_id'])
-            orig = orig_by_id.get(rid) if rid is not None else None
-            unchanged = (
-                orig is not None
-                and orig['_internal_asset'] == asset_code
-                and orig['Action'] == row['Action']
-                and abs(orig['Units'] - units) < 1e-9
-                and abs(orig['Price'] - price) < 1e-9
-            )
-            if unchanged:
-                charges, breakdown = orig['Charges'], orig['_charges_breakdown']
-            else:
-                ticker = strat_ledger.asset1 if asset_code == 'ASSET1' else strat_ledger.asset2
-                charges, breakdown = compute_trade_charges(ticker, action_code, units, price)
-
             db.add(Trade(
                 strategy_id=strat_ledger.id,
                 date=row['Date'],
                 asset=asset_code,
                 trade_type=action_code,
-                units=units,
-                price=price,
-                charges=charges,
-                charges_breakdown=breakdown
+                units=float(row['Units']),
+                price=float(row['Price']),
+                pledge=bool(row['Pledge']) if not pd.isna(row['Pledge']) else False
             ))
 
         db.commit()
         recalculate_portfolio_from_ledger(db, strat_ledger.id)
+        # Recompute all charges (base + per-day DP + per-switch pledge) from the
+        # full, updated ledger.
+        reconcile_strategy_charges(db, strat_ledger.id)
 
         st.success("Ledger updated successfully! Live portfolio exactly matches your trade history.")
         st.rerun()
