@@ -6,7 +6,7 @@ import pytz
 from common.database import Strategy, PendingSwitch, Portfolio, init_db, get_db
 from common.notifications import send_email
 from bees.donchian import evaluate_donchian_intraday
-from downloader.jobs import run_daily_download, run_db_backup
+from downloader.jobs import run_db_backup
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -137,11 +137,12 @@ def run_bot():
     # End of Day Scan at 3:35 PM IST
     schedule.every().day.at("15:35", "Asia/Kolkata").do(check_intraday_signals)
 
-    # Daily market-data download at 3:40 PM IST (after market close)
-    schedule.every().day.at("15:40", "Asia/Kolkata").do(run_daily_download)
+    # NOTE: Market-data downloads are NOT scheduled — they are memory-heavy
+    # (full option chains) and the VPS RAM can't process them unattended.
+    # Trigger downloads manually from the Downloader -> Options Download page.
 
-    # Daily database backup to Google Drive at 4:00 PM IST (skipped if a
-    # download job is still running — i.e. only when there's no activity)
+    # Daily database backup to Google Drive at 4:00 PM IST (lightweight: just a
+    # SQLite snapshot; skipped if a download is still running).
     schedule.every().day.at("16:00", "Asia/Kolkata").do(run_db_backup)
 
     # Daily Morning Email
