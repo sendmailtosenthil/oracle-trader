@@ -101,9 +101,17 @@ def _render_refresh(db, cfg):
     st.success("Zerodha token is valid.")
 
     history_from = st.text_input("Fetch history from (ISO date)", value="2024-01-01")
-    universe_syms = mdata.Universe.load().all_symbols()
-    st.caption(f"{len(universe_syms)} symbols in the constituent universe. "
-               "A full refresh takes several minutes (rate-limited).")
+
+    # Fetch only the CURRENT index membership plus any held stocks (so holdings
+    # that have since left the index still get priced). ~500 names in practice.
+    from common.database import MomentumHolding
+    current = {mdata.to_yahoo(s) for s in mdata.Universe.load().latest()}
+    held = {h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()}
+    fetch_syms = sorted(current | held)
+    extra = len(held - current)
+    st.caption(f"{len(fetch_syms)} symbols to fetch — current Nifty500 membership "
+               f"({len(current)})" + (f" + {extra} held name(s) outside it" if extra else "")
+               + ". Daily candles, rate-limited (a few minutes).")
 
     if st.button("⬇️ Refresh prices from Zerodha", type="primary"):
         log_box = st.empty()
@@ -116,7 +124,7 @@ def _render_refresh(db, cfg):
         with st.spinner("Fetching daily candles..."):
             result = mdata.refresh_prices(
                 enctoken=broker.enctoken, user_id=broker.user_id,
-                symbols=[mdata.to_yahoo(s) for s in universe_syms],
+                symbols=fetch_syms,
                 history_from=history_from, progress_cb=cb,
             )
         if result["fatal"]:

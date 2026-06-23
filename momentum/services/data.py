@@ -275,11 +275,15 @@ class Universe:
         return cls(snapshots)
 
     def all_symbols(self):
-        """Every NSE symbol that appears in any snapshot (full fetch universe)."""
+        """Every NSE symbol that appears in any snapshot (full historical universe)."""
         out = set()
         for snap in self.snapshots:
             out.update(snap["symbols"])
         return sorted(out)
+
+    def latest(self):
+        """Symbols in the most recent snapshot — the *current* index membership."""
+        return list(self.snapshots[-1]["symbols"]) if self.snapshots else []
 
     def as_of(self, iso):
         """Membership effective on ``iso``: {symbols, snapshot_date, stale}."""
@@ -317,8 +321,9 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
 
     Resolves each NSE symbol to its instrument token via the Kite instruments
     master, fetches daily candles from ``history_from`` to today, and writes the
-    per-symbol JSON cache. Returns a summary dict. Symbols default to the full
-    universe. Tolerates per-symbol failures (recorded in ``errors``).
+    per-symbol JSON cache. Returns a summary dict. Symbols default to the
+    *current* index membership (latest snapshot, ~500 names). Tolerates
+    per-symbol failures (recorded in ``errors``).
     """
     from common.zerodha_client import ZerodhaClient, fetch_with_retry, FatalAuthError
 
@@ -330,7 +335,7 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
                 pass
 
     if symbols is None:
-        symbols = [to_yahoo(s) for s in Universe.load().all_symbols()]
+        symbols = [to_yahoo(s) for s in Universe.load().latest()]
 
     result = {"updated": 0, "skipped": 0, "errors": [], "fatal": ""}
     os.makedirs(cache_dir(), exist_ok=True)
