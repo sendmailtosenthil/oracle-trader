@@ -32,6 +32,11 @@ MAX_CONCURRENCY = int(os.environ.get("DOWNLOADER_MAX_WORKERS", "4"))
 RAMP_STEP = int(os.environ.get("DOWNLOADER_RAMP_STEP", "50"))
 PACE_SECONDS = float(os.environ.get("DOWNLOADER_PACE_SECONDS", "0.2"))
 
+# Disk hygiene: the durable copy lives in Drive, so locally we keep only the
+# last N months of raw CSV folders (current + previous by default) for the
+# Analytics page; older months are pruned. Set to 0 to keep everything.
+KEEP_MONTHS = int(os.environ.get("DOWNLOADER_KEEP_MONTHS", "2"))
+
 INDEX_HEADER = "symbol,timestamp,open,high,low,close,volume"
 CONTRACT_HEADER = "symbol,expiry,strike,type,timestamp,open,high,low,close,volume,oi"
 
@@ -78,6 +83,7 @@ class DownloadReport:
     days: list = field(default_factory=list)          # list[DayResult]
     uploads: list = field(default_factory=list)        # list[{zip,status,error}]
     errors: list = field(default_factory=list)         # list[str]
+    pruned: list = field(default_factory=list)         # local month-folders removed
     fatal: str = ""
 
     @property
@@ -166,6 +172,12 @@ def run_download(
 
         if upload and touched_folders:
             _zip_and_upload(touched_folders, report, emit)
+
+        # Once data is safely in Drive, keep only the recent local window.
+        if upload and KEEP_MONTHS > 0:
+            report.pruned = prune_local_data(KEEP_MONTHS)
+            if report.pruned:
+                emit(f"Pruned old local data: {', '.join(report.pruned)}")
 
     except FatalAuthError as exc:
         report.fatal = str(exc)
@@ -395,6 +407,9 @@ def _zip_and_upload(touched_folders, report, emit):
             shutil.make_archive(zip_base, "zip", root_dir=DATA_ROOT, base_dir=folder_name)
             emit(f"Uploading {zip_name} to Drive...")
             uploader.upload_file(zip_path, zip_name, root_id)
+            # The local zip is redundant once it's in Drive — reclaim the space.
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
             report.uploads.append({"zip": zip_name, "status": "uploaded", "error": ""})
         except Exception as exc:  # noqa: BLE001
             report.uploads.append({"zip": zip_name, "status": "failed", "error": str(exc)})
@@ -459,6 +474,45 @@ def atm_step_for(symbol):
     return 50
 
 
+def _parse_folder_month(name):
+    """Parse a ``<symbol>-<mon>-<year>`` folder name into (year, month_num)."""
+    parts = name.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    _, mon, year = parts
+    if mon not in _MONTHS:
+        return None
+    try:
+        return (int(year), _MONTHS.index(mon) + 1)
+    except ValueError:
+        return None
+
+
+def prune_local_data(keep_months):
+    """Delete local month-folders older than the ``keep_months`` most recent.
+
+    Bounds local disk use — the durable copy is in Drive. Returns the list of
+    removed folder names.
+    """
+    if not os.path.isdir(DATA_ROOT):
+        return []
+    month_of = {}
+    for name in os.listdir(DATA_ROOT):
+        if os.path.isdir(os.path.join(DATA_ROOT, name)):
+            ym = _parse_folder_month(name)
+            if ym:
+                month_of[name] = ym
+    if not month_of:
+        return []
+    keep = set(sorted(set(month_of.values()), reverse=True)[:keep_months])
+    removed = []
+    for name, ym in month_of.items():
+        if ym not in keep:
+            shutil.rmtree(os.path.join(DATA_ROOT, name), ignore_errors=True)
+            removed.append(name)
+    return removed
+
+
 def _trading_days(start_date, end_date):
     """Weekdays between start and end inclusive (holidays filtered at download time)."""
     days = []
@@ -521,6 +575,7 @@ def report_html(report):
     </ul>
     <h3>Uploads to Google Drive</h3>
     <ul>{uploads_html}</ul>
+    {f"<p><b>Local cleanup:</b> pruned {len(report.pruned)} old month-folder(s) — {', '.join(report.pruned)}</p>" if report.pruned else ""}
     {errors_html}
     <h3>Per-day detail</h3>
     <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12px;">

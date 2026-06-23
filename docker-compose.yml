@@ -15,4 +15,5 @@ services:
       - DRIVE_TOKEN_PATH=${DRIVE_TOKEN_PATH:-/app/token.json}
       - DRIVE_ROOT_FOLDER=${DRIVE_ROOT_FOLDER:-QuantData}
       - DOWNLOADER_DATA_ROOT=${DOWNLOADER_DATA_ROOT:-/app/data}
+      - DOWNLOADER_KEEP_MONTHS=${DOWNLOADER_KEEP_MONTHS:-2}
     restart: unless-stopped

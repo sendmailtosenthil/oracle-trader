@@ -4,6 +4,8 @@
 if [ -f "oracle.db" ]; then
     cp oracle.db "oracle.db.$(date +%Y%m%d_%H%M%S).bak"
     echo "Database backup created securely."
+    # Keep only the 5 most recent local backups (the 4 PM job also pushes to Drive).
+    ls -1t oracle.db.*.bak 2>/dev/null | tail -n +6 | xargs -r rm -f
 fi
 
 # Ensure the project root is importable so the `common`, `bees` and
