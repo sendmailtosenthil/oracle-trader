@@ -4,6 +4,11 @@ Thin orchestration layer: page config, authentication, sidebar navigation, and
 dispatch to per-module page renderers. Cross-module infrastructure lives in
 ``common`` (database, Zerodha client, notifications); feature logic lives in the
 ``bees`` and ``downloader`` modules.
+
+Navigation uses Streamlit's native ``st.navigation`` so each module's pages
+render as clickable links grouped under a section header. The landing page is
+token-aware: Broker Setup when the Zerodha enctoken is missing/expired,
+otherwise the Bees Dashboard.
 """
 import streamlit as st
 
@@ -25,52 +30,63 @@ st.sidebar.title(f"Welcome, {st.session_state['username']}")
 if st.sidebar.button("Logout"):
     logout()
 
-# Navigation grouped by module — each module gets its own collapsible submenu.
-# A single ``active_page`` in session state is the source of truth; each radio
-# updates it on change so the groups behave as one mutually-exclusive menu.
-BEES_PAGES = ["Dashboard", "Operations (SIP / Batches)", "Ledger & History"]
-DOWNLOADER_PAGES = ["Options Download", "Analytics"]
-SETUP_PAGES = ["Broker Setup"]
-
-if "active_page" not in st.session_state:
-    st.session_state["active_page"] = "Dashboard"
-
-
-def _select(nav_key):
-    st.session_state["active_page"] = st.session_state[nav_key]
-
-
-with st.sidebar.expander("🐝 Bees", expanded=True):
-    st.radio("Bees", BEES_PAGES, label_visibility="collapsed",
-             key="bees_nav", on_change=_select, args=("bees_nav",))
-
-with st.sidebar.expander("📥 Downloader", expanded=False):
-    st.radio("Downloader", DOWNLOADER_PAGES, label_visibility="collapsed",
-             key="downloader_nav", on_change=_select, args=("downloader_nav",))
-
-with st.sidebar.expander("⚙️ Setup", expanded=False):
-    st.radio("Setup", SETUP_PAGES, label_visibility="collapsed",
-             key="setup_nav", on_change=_select, args=("setup_nav",))
-
-page = st.session_state["active_page"]
-
 db = next(get_db())
 strategies = db.query(Strategy).all()
 
-# Global Broker Check
+# Token check drives both the warning and the default landing page.
 broker_config = db.query(BrokerConfig).filter(BrokerConfig.broker_name == 'ZERODHA').first()
-if not broker_config or not is_zerodha_token_valid(broker_config.enctoken):
-    st.warning("🚨 **Zerodha Token Expired or Missing!** Your `enctoken` is invalid. Please navigate to the **Broker Setup** tab to update it.")
+token_ok = bool(
+    broker_config
+    and is_zerodha_token_valid(broker_config.enctoken, broker_config.user_id)
+)
+if not token_ok:
+    st.warning("🚨 **Zerodha Token Expired or Missing!** Your `enctoken` is invalid. Update it in **Broker Setup**.")
 
-if page == "Dashboard":
+
+# Page renderers close over this run's db/strategies.
+def _dashboard():
     dashboard.render(db, strategies)
-elif page == "Operations (SIP / Batches)":
+
+
+def _operations():
     operations.render(db, strategies)
-elif page == "Ledger & History":
+
+
+def _ledger():
     ledger.render(db, strategies)
-elif page == "Options Download":
+
+
+def _options_download():
     downloader_page.render(db)
-elif page == "Analytics":
+
+
+def _analytics():
     downloader_analytics.render(db)
-elif page == "Broker Setup":
+
+
+def _broker_setup():
     broker_setup.render(db)
+
+
+# Land on Dashboard when the token is valid, otherwise on Broker Setup.
+nav = st.navigation({
+    "🐝 Bees": [
+        st.Page(_dashboard, title="Dashboard", icon="📊",
+                url_path="dashboard", default=token_ok),
+        st.Page(_operations, title="Operations (SIP / Batches)", icon="🔁",
+                url_path="operations"),
+        st.Page(_ledger, title="Ledger & History", icon="📒",
+                url_path="ledger"),
+    ],
+    "📥 Downloader": [
+        st.Page(_options_download, title="Options Download", icon="⬇️",
+                url_path="options-download"),
+        st.Page(_analytics, title="Analytics", icon="📈",
+                url_path="analytics"),
+    ],
+    "⚙️ Setup": [
+        st.Page(_broker_setup, title="Broker Setup", icon="🔑",
+                url_path="broker-setup", default=not token_ok),
+    ],
+})
+nav.run()
