@@ -379,6 +379,16 @@ def portfolio_value(db, rank_map=None, price_book=None):
         price_book = mdata.PriceBook(mdata.load_series())
     rank_map = rank_map or {}
 
+    # Entry rank (rank when first bought) and total buy-side charges per symbol,
+    # derived from the trade ledger — no denormalised columns needed.
+    buys = (db.query(MomentumTrade)
+            .filter(MomentumTrade.side == "BUY")
+            .order_by(MomentumTrade.date.asc(), MomentumTrade.id.asc()).all())
+    entry_rank, charges_by = {}, {}
+    for t in buys:
+        entry_rank.setdefault(t.symbol, t.rank)
+        charges_by[t.symbol] = charges_by.get(t.symbol, 0.0) + (t.charges or 0.0)
+
     holdings = db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()
     rows, holdings_value = [], 0.0
     for h in holdings:
@@ -389,11 +399,13 @@ def portfolio_value(db, rank_map=None, price_book=None):
         holdings_value += mkt
         rows.append({
             "symbol": h.symbol, "shares": h.shares, "avg_cost": h.avg_cost,
-            "last": last, "value": mkt, "cost": cost,
+            "last": last, "value": mkt, "cost": cost, "charges": charges_by.get(h.symbol, 0.0),
             "pnl": mkt - cost, "pnl_pct": ((mkt / cost - 1) * 100) if cost else 0.0,
-            "rank": rank_map.get(h.symbol), "entry_date": h.entry_date,
+            "entry_rank": entry_rank.get(h.symbol), "rank": rank_map.get(h.symbol),
+            "entry_date": h.entry_date,
         })
-    rows.sort(key=lambda r: (r["rank"] is None, r["rank"] or 0))
+    # Order by entry rank (the order they were bought in), unranked last.
+    rows.sort(key=lambda r: (r["entry_rank"] is None, r["entry_rank"] or 0))
 
     equity = cfg.cash + holdings_value
     invested = (cfg.investment or 0.0) + (cfg.capital_injected or 0.0)

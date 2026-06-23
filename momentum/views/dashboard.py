@@ -50,12 +50,25 @@ def render(db):
     else:
         st.subheader(f"Holdings ({pv['n_holdings']})")
         hdf = pd.DataFrame([{
-            "Rank": h["rank"], "Symbol": h["symbol"], "Shares": h["shares"],
-            "Avg cost": round(h["avg_cost"], 2), "Last": round(h["last"], 2) if h["last"] else None,
-            "Value": round(h["value"], 0), "P/L": round(h["pnl"], 0),
-            "P/L %": round(h["pnl_pct"], 2), "Entry": h["entry_date"],
+            "Entry rank": h["entry_rank"],
+            "Today rank": h["rank"] if h["rank"] is not None else None,
+            "Rank Δ": (h["entry_rank"] - h["rank"])
+                       if (h["rank"] is not None and h["entry_rank"] is not None) else None,
+            "Symbol": h["symbol"], "Shares": h["shares"],
+            "Buy price": round(h["avg_cost"], 2),
+            "Invested": round(h["cost"], 0),
+            "Charges": round(h["charges"], 2),
+            "LTP": round(h["last"], 2) if h["last"] else None,
+            "Cur. value": round(h["value"], 0),
+            "P/L": round(h["pnl"], 0) if h["last"] else None,
+            "P/L %": round(h["pnl_pct"], 2) if h["last"] else None,
+            "Bought": h["entry_date"],
         } for h in pv["holdings"]])
         st.dataframe(hdf, use_container_width=True, hide_index=True)
+        if not has_prices:
+            st.caption("**LTP / Cur. value / P/L / Today rank** populate after you "
+                       "**Refresh prices** (Rebalance tab). 'Rank Δ' = entry rank − today's rank "
+                       "(positive = improved).")
 
         # Flag laggards whose rank has dropped beyond the replacement threshold
         # (only meaningful once a ranking has been computed).
