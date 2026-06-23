@@ -2,9 +2,9 @@
 import streamlit as st
 import plotly.graph_objects as go
 
-from bees.database import Portfolio, PendingSwitch
+from bees.database import Portfolio, CashFlow, Trade, PendingSwitch
 from bees.donchian import evaluate_donchian_intraday
-from bees.services.finance import calculate_xirr
+from bees.services.finance import calculate_xirr, total_charges, realized_pnl_by_asset
 
 
 def render(db, strategies):
@@ -25,24 +25,44 @@ def render(db, strategies):
         port1 = next(p for p in portfolios if p.asset == 'ASSET1')
         port2 = next(p for p in portfolios if p.asset == 'ASSET2')
 
-        val1 = port1.units * res['live_price1']
-        val2 = port2.units * res['live_price2']
-        total_val = val1 + val2
+        # Current market value of holdings
+        total_val = port1.units * res['live_price1'] + port2.units * res['live_price2']
 
+        # Cost basis of current holdings (= Cash Invested + realized profit reinvested via switches)
         total_invested = port1.invested_amount + port2.invested_amount
+
+        # Net external money contributed (deposits - withdrawals)
+        cash_invested = -sum(cf.amount for cf in db.query(CashFlow).filter(CashFlow.strategy_id == strat.id).all())
+
+        # Realized profit booked from sells/switches (over full history)
+        trades = db.query(Trade).filter(Trade.strategy_id == strat.id).order_by(Trade.date.asc()).all()
+        realized = realized_pnl_by_asset(trades)
+        realized_profit = realized['ASSET1'] + realized['ASSET2']
+
+        unrealized_pnl = total_val - total_invested
+        unrealized_pct = (unrealized_pnl / total_invested * 100) if total_invested > 0 else 0.0
+        charges = total_charges(db, strat.id)
         roi = ((total_val / total_invested) - 1) * 100 if total_invested > 0 else 0
         strat_xirr = calculate_xirr(db, strat.id, total_val)
 
-        # Synchronize Unrealized PNL with Current Value so math always adds up
-        unrealized_pnl = total_val - total_invested
+        # Live prices
+        st.caption(f"**{strat.asset1}** ₹{res['live_price1']:.2f}  ·  **{strat.asset2}** ₹{res['live_price2']:.2f}")
 
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        col1.metric(f"{strat.asset1} Price", f"₹{res['live_price1']:.2f}")
-        col2.metric(f"{strat.asset2} Price", f"₹{res['live_price2']:.2f}")
-        col3.metric("Total Invested", f"₹{total_invested:,.2f}")
-        col4.metric("Current Value", f"₹{total_val:,.2f}", f"{roi:.2f}% ROI")
-        col5.metric("Unrealized PnL", f"₹{unrealized_pnl:,.2f}", delta_color="normal" if unrealized_pnl >= 0 else "inverse")
-        col6.metric("XIRR", f"{strat_xirr:.2f}%")
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+        c1.metric("Cash Invested", f"₹{cash_invested:,.2f}",
+                  help="Net money you actually contributed (deposits − withdrawals).")
+        c2.metric("Total Invested", f"₹{total_invested:,.2f}",
+                  help="Cost basis of current holdings = Cash Invested + realized profit reinvested through switches.")
+        c3.metric("Current Value", f"₹{total_val:,.2f}", f"{roi:.2f}% ROI",
+                  help="Live market value of holdings. ROI is vs Total Invested.")
+        c4.metric("Realized Profit", f"₹{realized_profit:,.2f}",
+                  help="Profit already booked from sells/switches (already included in Total Invested).")
+        c5.metric("Unrealized Profit", f"₹{unrealized_pnl:,.2f}", f"{unrealized_pct:.2f}%",
+                  help="Current Value − Total Invested.")
+        c6.metric("Charges", f"₹{charges:,.2f}",
+                  help="Total trading charges to date (already reflected in XIRR).")
+        c7.metric("XIRR", f"{strat_xirr:.2f}%",
+                  help="Annualized return from your cash flows, net of charges.")
 
         pending = db.query(PendingSwitch).filter(PendingSwitch.strategy_id == strat.id, PendingSwitch.status == 'PENDING').first()
 
