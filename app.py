@@ -13,6 +13,7 @@ from bees.auth import require_auth, logout
 from bees.styles import inject_global_css
 from bees.views import dashboard, operations, ledger, broker_setup
 from downloader.views import page as downloader_page
+from downloader.views import analytics as downloader_analytics
 
 st.set_page_config(page_title="Project Oracle", layout="wide")
 inject_global_css()
@@ -28,7 +29,7 @@ if st.sidebar.button("Logout"):
 # A single ``active_page`` in session state is the source of truth; each radio
 # updates it on change so the groups behave as one mutually-exclusive menu.
 BEES_PAGES = ["Dashboard", "Operations (SIP / Batches)", "Ledger & History"]
-DOWNLOADER_PAGES = ["Download"]
+DOWNLOADER_PAGES = ["Options Download", "Analytics"]
 SETUP_PAGES = ["Broker Setup"]
 
 if "active_page" not in st.session_state:
@@ -67,7 +68,9 @@ elif page == "Operations (SIP / Batches)":
     operations.render(db, strategies)
 elif page == "Ledger & History":
     ledger.render(db, strategies)
-elif page == "Download":
+elif page == "Options Download":
     downloader_page.render(db)
+elif page == "Analytics":
+    downloader_analytics.render(db)
 elif page == "Broker Setup":
     broker_setup.render(db)

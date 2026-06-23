@@ -151,7 +151,7 @@ def run_download(
                 os.makedirs(folder_path, exist_ok=True)
                 emit(f"{task['symbol']} {date_str}: downloading index...")
 
-                day = _download_day(client, task, d, date_str, folder_path, vix_token, emit)
+                day = _download_day(client, task, d, date_str, vix_token, emit)
                 if day is None:
                     continue  # holiday / no data
                 report.days.append(day)
@@ -174,16 +174,15 @@ def run_download(
     return report
 
 
-def _download_day(client, task, d, date_str, folder_path, vix_token, emit):
+def _download_day(client, task, d, date_str, vix_token, emit):
     """Download all instrument types for one (symbol, day). Returns DayResult or None."""
     frm = datetime.datetime.combine(d, datetime.time(9, 15, 0))
     to = datetime.datetime.combine(d, datetime.time(15, 30, 0))
     sym = task["symbol"]
-    sym_lc = sym.lower()
     day = DayResult(date=date_str, symbol=sym)
 
     # --- Index ---
-    index_file = os.path.join(folder_path, f"{sym_lc}-index-{date_str}.csv")
+    index_file = data_file_path(sym, date_str, "index")
     try:
         candles = fetch_with_retry(
             lambda: client.get_historical(task["index_token"], "minute", frm, to)
@@ -204,7 +203,7 @@ def _download_day(client, task, d, date_str, folder_path, vix_token, emit):
 
     # --- India VIX (NIFTY only) ---
     if task["want_vix"]:
-        vix_file = os.path.join(folder_path, f"india-vix-{date_str}.csv")
+        vix_file = data_file_path(sym, date_str, "vix")
         try:
             emit(f"{sym} {date_str}: downloading India VIX...")
             vix = fetch_with_retry(lambda: client.get_historical(vix_token, "minute", frm, to))
@@ -216,7 +215,7 @@ def _download_day(client, task, d, date_str, folder_path, vix_token, emit):
             day.vix_status = f"error: {exc}"
 
     # --- Futures ---
-    fut_file = os.path.join(folder_path, f"{sym_lc}-futures-{date_str}.csv")
+    fut_file = data_file_path(sym, date_str, "futures")
     futures = client.filter_instruments(sym, instrument_type="FUT", min_expiry=d)
     try:
         emit(f"{sym} {date_str}: downloading {len(futures)} futures...")
@@ -230,7 +229,7 @@ def _download_day(client, task, d, date_str, folder_path, vix_token, emit):
         day.futures_status = f"error: {exc}"
 
     # --- Options ---
-    opt_file = os.path.join(folder_path, f"{sym_lc}-options-{date_str}.csv")
+    opt_file = data_file_path(sym, date_str, "options")
     options = client.filter_instruments(sym, segment="NFO-OPT", min_expiry=d)
     try:
         emit(f"{sym} {date_str}: downloading {len(options)} option contracts...")
@@ -420,6 +419,38 @@ def _persist_stat(db, day, upload_status):
     row.file_size_mb = size_mb
     row.upload_status = upload_status
     db.commit()
+
+
+def month_folder_name(symbol, d):
+    """Folder name for a symbol's data in a given month, e.g. ``nifty-jun-2026``."""
+    return f"{symbol.lower()}-{_MONTHS[d.month - 1]}-{d.year}"
+
+
+def data_file_path(symbol, date_str, kind):
+    """Resolve the local CSV path for a downloaded artifact.
+
+    ``kind`` is one of ``index``/``vix``/``futures``/``options``. Used by both
+    the downloader (when writing) and analytics (when reading) so the naming
+    convention lives in one place.
+    """
+    d = datetime.date.fromisoformat(date_str)
+    folder = month_folder_name(symbol, d)
+    sym_lc = symbol.lower()
+    names = {
+        "index": f"{sym_lc}-index-{date_str}.csv",
+        "vix": f"india-vix-{date_str}.csv",
+        "futures": f"{sym_lc}-futures-{date_str}.csv",
+        "options": f"{sym_lc}-options-{date_str}.csv",
+    }
+    return os.path.join(DATA_ROOT, folder, names[kind])
+
+
+def atm_step_for(symbol):
+    """ATM strike rounding step for a symbol (50 for NIFTY, 100 for BANKNIFTY)."""
+    for t in TASKS:
+        if t["symbol"] == symbol:
+            return t["atm_step"]
+    return 50
 
 
 def _trading_days(start_date, end_date):
