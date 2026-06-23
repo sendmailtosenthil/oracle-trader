@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker
 import datetime
 import hashlib
@@ -80,7 +80,10 @@ class DownloadJob(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class DownloadStat(Base):
+    # Mirrors quant-downloader's `stats` table (date+symbol keyed), with a few
+    # additions: futures split out from options, and the ATM strike recorded.
     __tablename__ = 'download_stats'
+    __table_args__ = (UniqueConstraint('date', 'symbol', name='uq_download_stats_date_symbol'),)
     id = Column(Integer, primary_key=True)
     date = Column(String, nullable=False)         # ISO date string
     symbol = Column(String, nullable=False)       # 'NIFTY' or 'BANKNIFTY'
@@ -88,6 +91,8 @@ class DownloadStat(Base):
     vix_status = Column(String, default='skipped')
     futures_status = Column(String, default='skipped')
     options_status = Column(String, default='skipped')
+    ce_instruments = Column(Integer, default=0)   # count of CE option contracts in the chain
+    pe_instruments = Column(Integer, default=0)   # count of PE option contracts in the chain
     ce_rows = Column(Integer, default=0)          # ATM call rows
     pe_rows = Column(Integer, default=0)          # ATM put rows
     atm_strike = Column(Float, default=0.0)

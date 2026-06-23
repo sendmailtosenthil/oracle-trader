@@ -62,6 +62,8 @@ class DayResult:
     vix_status: str = "skipped"
     futures_status: str = "skipped"
     options_status: str = "skipped"
+    ce_instruments: int = 0
+    pe_instruments: int = 0
     ce_rows: int = 0
     pe_rows: int = 0
     atm_strike: float = 0.0
@@ -231,6 +233,8 @@ def _download_day(client, task, d, date_str, vix_token, emit):
     # --- Options ---
     opt_file = data_file_path(sym, date_str, "options")
     options = client.filter_instruments(sym, segment="NFO-OPT", min_expiry=d)
+    day.ce_instruments = sum(1 for i in options if i["instrument_type"] == "CE")
+    day.pe_instruments = sum(1 for i in options if i["instrument_type"] == "PE")
     try:
         emit(f"{sym} {date_str}: downloading {len(options)} option contracts...")
         rows, ce, pe = _download_contracts(client, options, frm, to, opt_file, atm_strike=day.atm_strike)
@@ -413,6 +417,8 @@ def _persist_stat(db, day, upload_status):
     row.vix_status = day.vix_status
     row.futures_status = day.futures_status
     row.options_status = day.options_status
+    row.ce_instruments = day.ce_instruments
+    row.pe_instruments = day.pe_instruments
     row.ce_rows = day.ce_rows
     row.pe_rows = day.pe_rows
     row.atm_strike = day.atm_strike
@@ -489,6 +495,7 @@ def report_html(report):
             <td>{d.vix_status}</td>
             <td>{d.futures_status}</td>
             <td>{d.options_status}</td>
+            <td>{d.ce_instruments} / {d.pe_instruments}</td>
             <td>{d.ce_rows} / {d.pe_rows}</td>
             <td style="font-size:11px;">{files_txt}</td>
         </tr>"""
@@ -519,7 +526,8 @@ def report_html(report):
     <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12px;">
         <tr style="background:#f0f0f0;">
             <th>Date</th><th>Symbol</th><th>Index</th><th>VIX</th>
-            <th>Futures</th><th>Options</th><th>ATM CE/PE rows</th><th>Files</th>
+            <th>Futures</th><th>Options</th><th>CE/PE contracts</th>
+            <th>ATM CE/PE rows</th><th>Files</th>
         </tr>
         {rows_html}
     </table>

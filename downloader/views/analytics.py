@@ -36,6 +36,7 @@ def _render_coverage(db):
         "date": s.date, "symbol": s.symbol,
         "index": s.index_status, "vix": s.vix_status,
         "futures": s.futures_status, "options": s.options_status,
+        "ce_contracts": s.ce_instruments, "pe_contracts": s.pe_instruments,
         "ce_atm": s.ce_rows, "pe_atm": s.pe_rows,
         "size_mb": round(s.file_size_mb, 2), "upload": s.upload_status,
     } for s in stats])
