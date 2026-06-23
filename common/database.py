@@ -79,6 +79,66 @@ class DownloadJob(Base):
     message = Column(String, nullable=True)       # summary / error text
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class MomentumConfig(Base):
+    # Single-row configuration for the momentum strategy (Nifty500 weighted
+    # momentum). Mirrors quant-momentum's config.js — factors stored as JSON.
+    __tablename__ = 'momentum_config'
+    id = Column(Integer, primary_key=True)
+    investment = Column(Float, default=100000.0)        # initial capital (₹)
+    num_stocks = Column(Integer, default=15)            # equal-weight holdings
+    factors_json = Column(String, default='[{"months": 3, "weight": 0.40}, {"months": 6, "weight": 0.32}, {"months": 9, "weight": 0.28}]')
+    vol_enabled = Column(Boolean, default=True)         # risk-adjust by volatility
+    vol_months = Column(Integer, default=3)             # volatility lookback
+    min_history_coverage = Column(Float, default=0.8)   # min fraction of expected bars
+    replace_rank_threshold = Column(Integer, default=40)  # sell when rank > this
+    reinvest_idle_cash = Column(Boolean, default=True)  # redeploy all cash on rebalance
+    cash = Column(Float, default=100000.0)              # idle cash in hand
+    capital_injected = Column(Float, default=0.0)       # extra capital from min-1 top-ups
+
+class MomentumHolding(Base):
+    # A currently-held position (one row per symbol). Recalculated from
+    # MomentumTrade on every executed rebalance.
+    __tablename__ = 'momentum_holdings'
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, unique=True, nullable=False)   # NSE ticker, e.g. 'MARUTI.NS'
+    shares = Column(Integer, default=0)
+    avg_cost = Column(Float, default=0.0)
+    entry_date = Column(String, nullable=True)             # ISO date first bought
+
+class MomentumTrade(Base):
+    # Append-only trade ledger. Sells carry realized pnl + holding metadata.
+    __tablename__ = 'momentum_trades'
+    id = Column(Integer, primary_key=True)
+    date = Column(String, nullable=False)                  # ISO trade date
+    symbol = Column(String, nullable=False)
+    side = Column(String, nullable=False)                  # 'BUY' or 'SELL'
+    shares = Column(Integer, nullable=False)
+    price = Column(Float, nullable=False)
+    value = Column(Float, nullable=False)                  # shares * price (turnover)
+    charges = Column(Float, default=0.0)                   # Zerodha charges (STT, txn, GST, stamp, DP)
+    rank = Column(Integer, nullable=True)                  # momentum rank at trade time
+    avg_cost = Column(Float, nullable=True)                # for sells: cost basis sold
+    pnl = Column(Float, nullable=True)                     # realized pnl, net of charges (sells)
+    reason = Column(String, nullable=True)                 # 'deploy' / 'rank>40' / 'left-index' ...
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class MomentumRanking(Base):
+    # Snapshot of a computed ranking run, keyed by (as_of, symbol). Persisted so
+    # the dashboard can show the latest ranking without recomputing every load.
+    __tablename__ = 'momentum_rankings'
+    __table_args__ = (UniqueConstraint('as_of', 'symbol', name='uq_momentum_rankings_asof_symbol'),)
+    id = Column(Integer, primary_key=True)
+    as_of = Column(String, nullable=False)                 # ISO ranking date
+    symbol = Column(String, nullable=False)
+    rank = Column(Integer, nullable=False)
+    score = Column(Float, default=0.0)                     # final (vol-adjusted) score
+    blended = Column(Float, default=0.0)                   # blended factor return
+    r3m = Column(Float, nullable=True)
+    r6m = Column(Float, nullable=True)
+    r9m = Column(Float, nullable=True)
+    vol = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 class DownloadStat(Base):
     # Mirrors quant-downloader's `stats` table (date+symbol keyed), with a few
     # additions: futures split out from options, and the ATM strike recorded.
@@ -151,7 +211,11 @@ def seed_data():
         
         db.add(Portfolio(strategy_id=bank_it.id, asset='ASSET1', units=0.0, invested_amount=0.0))
         db.add(Portfolio(strategy_id=bank_it.id, asset='ASSET2', units=0.0, invested_amount=0.0))
-        
+
+    # Default momentum config (15-stock Nifty500 weighted-momentum strategy).
+    if not db.query(MomentumConfig).first():
+        db.add(MomentumConfig(investment=225000.0, num_stocks=15, cash=225000.0))
+
     db.commit()
     db.close()
 

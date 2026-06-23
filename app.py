@@ -19,6 +19,9 @@ from bees.styles import inject_global_css
 from bees.views import dashboard, operations, ledger, broker_setup
 from downloader.views import page as downloader_page
 from downloader.views import analytics as downloader_analytics
+from momentum.views import dashboard as momentum_dashboard
+from momentum.views import rebalance as momentum_rebalance
+from momentum.views import ledger as momentum_ledger
 
 st.set_page_config(page_title="Project Oracle", layout="wide")
 inject_global_css()
@@ -64,6 +67,18 @@ def _analytics():
     downloader_analytics.render(db)
 
 
+def _momentum_dashboard():
+    momentum_dashboard.render(db)
+
+
+def _momentum_rebalance():
+    momentum_rebalance.render(db)
+
+
+def _momentum_ledger():
+    momentum_ledger.render(db)
+
+
 def _broker_setup():
     broker_setup.render(db)
 
@@ -83,6 +98,14 @@ nav = st.navigation({
                 url_path="options-download"),
         st.Page(_analytics, title="Analytics", icon="📈",
                 url_path="analytics"),
+    ],
+    "📈 Momentum": [
+        st.Page(_momentum_dashboard, title="Dashboard", icon="📊",
+                url_path="momentum"),
+        st.Page(_momentum_rebalance, title="Rebalance", icon="🔁",
+                url_path="momentum-rebalance"),
+        st.Page(_momentum_ledger, title="Ledger & History", icon="📒",
+                url_path="momentum-ledger"),
     ],
     "⚙️ Setup": [
         st.Page(_broker_setup, title="Broker Setup", icon="🔑",
