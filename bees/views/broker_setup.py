@@ -1,8 +1,8 @@
 """Broker Setup page: configure Zerodha / Kite credentials."""
 import streamlit as st
 
-from bees.database import BrokerConfig
-from bees.services.broker import is_zerodha_token_valid
+from common.database import BrokerConfig
+from common.broker import is_zerodha_token_valid
 
 
 def render(db):

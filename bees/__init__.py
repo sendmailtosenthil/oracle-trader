@@ -1,5 +1,6 @@
-"""bees — Project Oracle trading application package.
+"""bees — Project Oracle trading/portfolio feature module.
 
-Contains the Donchian-channel strategy engine, database models, the Streamlit
-dashboard, authentication, and the background alert/summary bot daemon.
+Contains the Donchian-channel strategy engine, the Streamlit dashboard/views,
+authentication, and the background alert/summary bot daemon. Shared
+infrastructure (database, Zerodha client, notifications) lives in ``common``.
 """

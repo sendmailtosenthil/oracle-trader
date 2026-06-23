@@ -10,3 +10,7 @@ oracle.db.*
 .pytest_cache/
 .coverage
 htmlcov/
+# Downloader: market data output + Google Drive OAuth secrets (never commit)
+data/
+credentials.json
+token.json

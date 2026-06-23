@@ -3,7 +3,7 @@ import datetime
 
 import streamlit as st
 
-from bees.database import Strategy, CashFlow, PendingSwitch, Trade, recalculate_portfolio_from_ledger
+from common.database import Strategy, CashFlow, PendingSwitch, Trade, recalculate_portfolio_from_ledger
 from bees.services.charges import reconcile_strategy_charges
 
 

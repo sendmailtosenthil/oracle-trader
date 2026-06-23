@@ -68,6 +68,33 @@ class BrokerConfig(Base):
     user_id = Column(String, nullable=False, default='PC8006')
     enctoken = Column(String, nullable=False)
 
+class DownloadJob(Base):
+    __tablename__ = 'download_jobs'
+    id = Column(Integer, primary_key=True)
+    job_type = Column(String, default='manual')  # 'manual' or 'auto'
+    status = Column(String, default='pending')    # pending/running/completed/failed
+    start_date = Column(String, nullable=False)   # ISO date string
+    end_date = Column(String, nullable=False)
+    symbols = Column(String, nullable=True)       # comma-separated, e.g. 'NIFTY,BANKNIFTY'
+    message = Column(String, nullable=True)       # summary / error text
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class DownloadStat(Base):
+    __tablename__ = 'download_stats'
+    id = Column(Integer, primary_key=True)
+    date = Column(String, nullable=False)         # ISO date string
+    symbol = Column(String, nullable=False)       # 'NIFTY' or 'BANKNIFTY'
+    index_status = Column(String, default='skipped')
+    vix_status = Column(String, default='skipped')
+    futures_status = Column(String, default='skipped')
+    options_status = Column(String, default='skipped')
+    ce_rows = Column(Integer, default=0)          # ATM call rows
+    pe_rows = Column(Integer, default=0)          # ATM put rows
+    atm_strike = Column(Float, default=0.0)
+    file_size_mb = Column(Float, default=0.0)
+    upload_status = Column(String, default='skipped')
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 # Singleton setup
 engine = None
 SessionLocal = None

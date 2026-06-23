@@ -3,7 +3,7 @@ import datetime
 
 from pyxirr import xirr
 
-from bees.database import CashFlow, Trade
+from common.database import CashFlow, Trade
 
 
 def total_charges(db, strategy_id):

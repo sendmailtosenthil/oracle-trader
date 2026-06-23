@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Initialize the database on build
-RUN python -m bees.database
+RUN python -m common.database
 
 EXPOSE 8501
 

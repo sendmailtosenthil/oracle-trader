@@ -1,4 +1,9 @@
-"""Email notification helper (shared by the bot daemon and any alerting code)."""
+"""Email notification helper shared across modules (bot, downloader, alerts).
+
+Generic transport only. Feature-specific email bodies are built by their own
+modules (e.g. ``downloader.services.core.report_html``) and passed to
+``send_email``.
+"""
 import os
 import smtplib
 from email.message import EmailMessage

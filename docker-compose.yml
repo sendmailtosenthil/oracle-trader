@@ -10,4 +10,9 @@ services:
     environment:
       - GMAIL_USER=${GMAIL_USER}
       - GMAIL_PASS=${GMAIL_PASS}
+      - ZERODHA_USER_ID=${ZERODHA_USER_ID:-PC8006}
+      - DRIVE_CREDENTIALS_PATH=${DRIVE_CREDENTIALS_PATH:-/app/credentials.json}
+      - DRIVE_TOKEN_PATH=${DRIVE_TOKEN_PATH:-/app/token.json}
+      - DRIVE_ROOT_FOLDER=${DRIVE_ROOT_FOLDER:-QuantData}
+      - DOWNLOADER_DATA_ROOT=${DOWNLOADER_DATA_ROOT:-/app/data}
     restart: unless-stopped

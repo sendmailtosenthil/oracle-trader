@@ -2,7 +2,7 @@
 import streamlit as st
 import plotly.graph_objects as go
 
-from bees.database import Portfolio, CashFlow, Trade, PendingSwitch
+from common.database import Portfolio, CashFlow, Trade, PendingSwitch
 from bees.donchian import evaluate_donchian_intraday
 from bees.services.finance import calculate_xirr, total_charges, realized_pnl_by_asset
 

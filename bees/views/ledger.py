@@ -2,7 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from bees.database import Portfolio, CashFlow, Trade, recalculate_portfolio_from_ledger
+from common.database import Portfolio, CashFlow, Trade, recalculate_portfolio_from_ledger
 from bees.services.charges import reconcile_strategy_charges
 from bees.services.finance import realized_pnl_by_asset, realized_charges_by_asset
 from bees.services.market_data import get_asset_metrics
