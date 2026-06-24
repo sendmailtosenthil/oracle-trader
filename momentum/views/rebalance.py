@@ -141,18 +141,20 @@ def _render_refresh(db, cfg):
     st.success("Zerodha token is valid.")
 
     today = datetime.date.today()
-    # Momentum needs ~9-month lookback (+buffer). If the cache lacks that history
-    # (fresh start, or a prior short-range fetch truncated it), default the start
-    # back ~15 months to rebuild; otherwise default to today for a daily top-up.
+    # Momentum needs ~9-month lookback (+buffer). The default resumes from the last
+    # cached bar (the date history is pulled to and used for calculation), so a
+    # refresh only fetches the gap to today — fewer requests. If the cache lacks the
+    # lookback (fresh start, or a prior short-range fetch truncated it), default the
+    # start back ~15 months to (re)build it.
     full_start = today - datetime.timedelta(days=455)
     lookback_ok = bool(earliest_bar) and earliest_bar <= (today - datetime.timedelta(days=300)).isoformat()
-    default_from = today if lookback_ok else full_start
+    default_from = datetime.date.fromisoformat(latest_bar) if (lookback_ok and latest_bar) else full_start
 
     history_from = st.date_input(
         "Fetch history from", value=default_from, max_value=today, format="YYYY-MM-DD",
-        help="Start date for the daily candles fetched (end is always today). "
-             "Bars merge into the cache, so a daily top-up can start at today; "
-             "for a first build or to repair history, pick ~15 months back.",
+        help="Defaults to the last cached price date, so a refresh only tops up the "
+             "gap to today (fewer Zerodha requests). New bars merge into the cache. "
+             "For a first build or to repair history, pick ~15 months back.",
     )
     if not lookback_ok:
         st.warning(f"⚠️ Cached history is short (earliest bar: {earliest_bar or 'none'}). "
@@ -169,6 +171,9 @@ def _render_refresh(db, cfg):
     st.caption(f"{len(fetch_syms)} symbols to fetch — current Nifty500 membership "
                f"({len(current)})" + (f" + {extra} held name(s) outside it" if extra else "")
                + ". Daily candles, rate-limited (a few minutes).")
+    st.info("Prices are fetched **only when you click below** — the app never "
+            "auto-downloads the 500 from Zerodha. Run this manually when you want "
+            "fresh prices/ranks.")
 
     if st.button("⬇️ Refresh prices from Zerodha", type="primary"):
         log_box = st.empty()
