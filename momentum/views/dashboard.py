@@ -13,7 +13,7 @@ def render(db):
     cfg = strategy.get_config(db)
     # Self-heal the Nifty 500 universe (downloads only when missing/stale).
     H.auto_refresh_constituents()
-    n_files, fetched_at, latest_bar = mdata.cache_meta()
+    n_files, fetched_at, latest_bar, _earliest = mdata.cache_meta()
 
     has_prices = n_files > 0
     ranking = H.get_ranking(db) if has_prices else {"ranked": [], "as_of": None,

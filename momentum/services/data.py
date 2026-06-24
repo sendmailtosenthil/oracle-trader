@@ -92,10 +92,11 @@ def load_series(symbols=None):
 
 
 def cache_meta():
-    """Return (n_symbols, latest_fetched_at, latest_bar_date) across the cache."""
+    """Return (n_symbols, latest_fetched_at, latest_bar_date, earliest_bar_date)."""
     files = glob.glob(os.path.join(cache_dir(), "*.json"))
     latest_fetch = ""
     latest_bar = ""
+    earliest_bar = ""
     for path in files:
         try:
             with open(path) as f:
@@ -106,7 +107,9 @@ def cache_meta():
         bars = payload.get("bars") or []
         if bars:
             latest_bar = max(latest_bar, bars[-1]["date"])
-    return len(files), latest_fetch, latest_bar
+            first = bars[0]["date"]
+            earliest_bar = first if not earliest_bar else min(earliest_bar, first)
+    return len(files), latest_fetch, latest_bar, earliest_bar
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +456,8 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
 
     if symbols is None:
         symbols = [to_yahoo(s) for s in Universe.load().latest()]
+    if isinstance(history_from, datetime.date):
+        history_from = history_from.isoformat()
 
     result = {"updated": 0, "skipped": 0, "errors": [], "fatal": ""}
     os.makedirs(cache_dir(), exist_ok=True)
@@ -484,16 +489,30 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
             try:
                 emit(f"[{i}/{len(symbols)}] {sym}...")
                 candles = fetch_with_retry(lambda: client.get_historical(token, "day", frm, to))
-                bars = [{"date": str(c["timestamp"])[:10], "open": c["open"], "high": c["high"],
-                         "low": c["low"], "close": c["close"], "volume": c["volume"]}
-                        for c in candles]
-                if not bars:
+                new_bars = {str(c["timestamp"])[:10]:
+                            {"date": str(c["timestamp"])[:10], "open": c["open"], "high": c["high"],
+                             "low": c["low"], "close": c["close"], "volume": c["volume"]}
+                            for c in candles}
+                if not new_bars:
                     result["skipped"] += 1
                     continue
-                with open(os.path.join(cache_dir(), f"{sym}.json"), "w") as f:
+                # MERGE with any existing cached bars so a short-range fetch tops
+                # up history instead of overwriting it (newer bars win on a date).
+                path = os.path.join(cache_dir(), f"{sym}.json")
+                merged = {}
+                if os.path.exists(path):
+                    try:
+                        with open(path) as f:
+                            for b in (json.load(f).get("bars") or []):
+                                merged[b["date"]] = b
+                    except (ValueError, OSError):
+                        pass
+                merged.update(new_bars)
+                out_bars = [merged[d] for d in sorted(merged)]
+                with open(path, "w") as f:
                     json.dump({"symbol": sym, "token": token,
                                "fetchedAt": datetime.date.today().isoformat(),
-                               "bars": bars}, f)
+                               "bars": out_bars}, f)
                 result["updated"] += 1
             except FatalAuthError:
                 raise

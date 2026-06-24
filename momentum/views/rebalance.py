@@ -27,7 +27,7 @@ def render(db):
 
 # --------------------------------------------------------------------------
 def _render_plan(db, cfg):
-    n_files, _, latest_bar = mdata.cache_meta()
+    n_files, _, latest_bar, _earliest = mdata.cache_meta()
     if n_files == 0:
         st.error("No cached prices. Use the **Refresh prices** tab first.")
         return
@@ -87,12 +87,27 @@ def _render_plan(db, cfg):
 # --------------------------------------------------------------------------
 def _render_refresh(db, cfg):
     st.write("Re-fetch daily OHLC price history from Zerodha for the Nifty500 "
-             "universe and update the local cache used for ranking.")
-    n_files, fetched_at, latest_bar = mdata.cache_meta()
-    c1, c2, c3 = st.columns(3)
+             "universe and update the local cache used for ranking. New bars are "
+             "**merged** into the cache (existing history is preserved).")
+
+    # Show (and clear) the summary of the previous refresh, which survives the
+    # rerun we trigger so the metrics below reflect the new cache.
+    last = st.session_state.pop("mom_refresh_result", None)
+    if last:
+        if last["fatal"]:
+            st.error(f"Fatal: {last['fatal']}")
+        else:
+            st.success(f"Updated {last['updated']} symbol(s), skipped {last['skipped']}.")
+            if last["errors"]:
+                with st.expander(f"{len(last['errors'])} warning(s)"):
+                    st.write("\n".join(last["errors"][:50]))
+
+    n_files, fetched_at, latest_bar, earliest_bar = mdata.cache_meta()
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cached symbols", n_files)
     c2.metric("Last fetched", fetched_at or "—")
-    c3.metric("Latest bar", latest_bar or "—")
+    c3.metric("History from", earliest_bar or "—")
+    c4.metric("Latest bar", latest_bar or "—")
 
     # Constituents-file health: auto-fetch the official list when missing/stale,
     # then block refresh if we still can't use a valid list.
@@ -120,7 +135,24 @@ def _render_refresh(db, cfg):
         return
     st.success("Zerodha token is valid.")
 
-    history_from = st.text_input("Fetch history from (ISO date)", value="2024-01-01")
+    today = datetime.date.today()
+    # Momentum needs ~9-month lookback (+buffer). If the cache lacks that history
+    # (fresh start, or a prior short-range fetch truncated it), default the start
+    # back ~15 months to rebuild; otherwise default to today for a daily top-up.
+    full_start = today - datetime.timedelta(days=455)
+    lookback_ok = bool(earliest_bar) and earliest_bar <= (today - datetime.timedelta(days=300)).isoformat()
+    default_from = today if lookback_ok else full_start
+
+    history_from = st.date_input(
+        "Fetch history from", value=default_from, max_value=today, format="YYYY-MM-DD",
+        help="Start date for the daily candles fetched (end is always today). "
+             "Bars merge into the cache, so a daily top-up can start at today; "
+             "for a first build or to repair history, pick ~15 months back.",
+    )
+    if not lookback_ok:
+        st.warning(f"⚠️ Cached history is short (earliest bar: {earliest_bar or 'none'}). "
+                   f"Momentum needs ~9 months — fetch from **{full_start.isoformat()}** "
+                   "or earlier to (re)build the lookback before ranking will be meaningful.")
 
     # Fetch only the CURRENT index membership plus any held stocks (so holdings
     # that have since left the index still get priced). ~500 names in practice.
@@ -147,14 +179,10 @@ def _render_refresh(db, cfg):
                 symbols=fetch_syms,
                 history_from=history_from, progress_cb=cb,
             )
-        if result["fatal"]:
-            st.error(f"Fatal: {result['fatal']}")
-        else:
-            st.success(f"Updated {result['updated']} symbol(s), skipped {result['skipped']}.")
-            if result["errors"]:
-                with st.expander(f"{len(result['errors'])} warning(s)"):
-                    st.write("\n".join(result["errors"][:50]))
         H.clear_caches()
+        # Persist the summary and rerun so the metrics above reflect the new cache.
+        st.session_state["mom_refresh_result"] = result
+        st.rerun()
 
 
 # --------------------------------------------------------------------------
