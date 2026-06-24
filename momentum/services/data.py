@@ -177,8 +177,11 @@ class PriceBook:
     """In-memory price accessor over many symbols (no look-ahead)."""
 
     def __init__(self, series, pricing=None):
-        # pricing: {'buy': 'OPEN'|'CLOSE'|'HL2'|'OH2'|'OL2', 'sell': ...}
-        self.pricing = pricing or {"buy": "OPEN", "sell": "OPEN"}
+        # pricing: {'buy': 'CLOSE'|'OPEN'|'HL2'|'OH2'|'OL2', 'sell': ...}
+        # Default is CLOSE: this is a live tracker, so the price of a stock is the
+        # latest candle's close (today's running close during market hours, or a
+        # past day's settled close), consistent with how ranking scores closes.
+        self.pricing = pricing or {"buy": "CLOSE", "sell": "CLOSE"}
         self._dates = {}    # symbol -> [iso, ...] ascending
         self._by_date = {}  # symbol -> {iso: bar}
         for sym, bars in series.items():

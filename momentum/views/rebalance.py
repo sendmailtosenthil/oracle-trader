@@ -41,6 +41,9 @@ def _render_plan(db, cfg):
     plan = strategy.build_plan(db, ranking, ranking["as_of"], price_book=pb)
 
     st.write(f"Plan as of **{plan['as_of']}** — type: **{plan['type'].upper()}**")
+    st.caption("Ranking and buy/sell prices use the **latest candle close** "
+               f"({plan['as_of']}) — today's running close during market hours, "
+               "or the day's settled close otherwise.")
 
     if plan["type"] == "hold":
         st.success(plan.get("note", "Nothing to do — all holdings within threshold."))
