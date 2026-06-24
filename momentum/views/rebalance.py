@@ -86,9 +86,13 @@ def _render_plan(db, cfg):
 
 # --------------------------------------------------------------------------
 def _render_refresh(db, cfg):
-    st.write("Re-fetch daily OHLC price history from Zerodha for the Nifty500 "
-             "universe and update the local cache used for ranking. New bars are "
-             "**merged** into the cache (existing history is preserved).")
+    st.write("**Refresh prices** pulls the latest daily close (up to today) for all "
+             "500 Nifty500 stocks and the ranking recomputes from it. Momentum uses "
+             "3/6/9-month returns, so the app keeps ~1 year of daily history — the "
+             "**Fetch history from** date only controls how far back that history is "
+             "loaded, *not* how recent the prices are (the end is always today). "
+             "Leave it at **today** for a daily update; pick an older date only to "
+             "build or repair the lookback. New bars merge in; existing history is kept.")
 
     # Show (and clear) the summary of the previous refresh, which survives the
     # rerun we trigger so the metrics below reflect the new cache.
