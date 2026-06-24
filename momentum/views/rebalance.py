@@ -134,8 +134,7 @@ def _render_refresh(db, cfg):
             if result["errors"]:
                 with st.expander(f"{len(result['errors'])} warning(s)"):
                     st.write("\n".join(result["errors"][:50]))
-        H.get_ranking.clear()
-        H._bundle.clear()
+        H.clear_caches()
 
 
 # --------------------------------------------------------------------------
@@ -181,6 +180,6 @@ def _render_config(db, cfg):
         cfg.factors_json = json.dumps(facs)
         strategy.recalc_cash(db, cfg)  # investment change affects cash identity
         db.commit()
-        H.get_ranking.clear()
+        H.clear_caches()
         st.success("Settings saved.")
         st.rerun()

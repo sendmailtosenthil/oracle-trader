@@ -69,3 +69,11 @@ def get_ranking(db):
 
 def rank_map(ranking):
     return {r["symbol"]: r["rank"] for r in ranking["ranked"]}
+
+
+def clear_caches():
+    """Drop the cached ranking + price-book bundle (call after a price refresh
+    or config change). These are the actual cached callables — the public
+    ``get_ranking``/``price_book`` wrappers are not decorated."""
+    _ranking.clear()
+    _bundle.clear()
