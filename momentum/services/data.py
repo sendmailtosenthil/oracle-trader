@@ -20,7 +20,23 @@ import glob
 import json
 import os
 
+import pytz
+
+IST = pytz.timezone("Asia/Kolkata")
+
 DATA_ROOT = os.environ.get("MOMENTUM_DATA_ROOT", os.path.join("data", "momentum"))
+
+
+def format_fetched(value):
+    """Human-friendly 'fetchedAt' — handles full ISO datetimes and bare dates."""
+    if not value:
+        return "—"
+    if "T" in value:
+        try:
+            return datetime.datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M IST")
+        except ValueError:
+            return value
+    return value  # legacy date-only stamp
 
 
 def cache_dir():
@@ -478,6 +494,9 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
         frm = datetime.datetime.combine(datetime.date.fromisoformat(history_from),
                                         datetime.time(9, 15))
         to = datetime.datetime.combine(datetime.date.today(), datetime.time(15, 30))
+        # Single IST timestamp for this whole refresh run (when prices were pulled).
+        fetched_ts = datetime.datetime.now(IST).isoformat(timespec="seconds")
+        result["fetched_at"] = fetched_ts
 
         for i, sym in enumerate(symbols, 1):
             nse = sym[:-3] if sym.endswith(".NS") else sym
@@ -511,7 +530,7 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
                 out_bars = [merged[d] for d in sorted(merged)]
                 with open(path, "w") as f:
                     json.dump({"symbol": sym, "token": token,
-                               "fetchedAt": datetime.date.today().isoformat(),
+                               "fetchedAt": fetched_ts,
                                "bars": out_bars}, f)
                 result["updated"] += 1
             except FatalAuthError:

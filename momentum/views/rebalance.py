@@ -109,9 +109,10 @@ def _render_refresh(db, cfg):
     n_files, fetched_at, latest_bar, earliest_bar = mdata.cache_meta()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cached symbols", n_files)
-    c2.metric("Last fetched", fetched_at or "—")
+    c2.metric("Last fetched", mdata.format_fetched(fetched_at),
+              help="When prices were last pulled from Zerodha (IST).")
     c3.metric("History from", earliest_bar or "—")
-    c4.metric("Latest bar", latest_bar or "—")
+    c4.metric("Latest bar", latest_bar or "—", help="Date of the most recent price bar.")
 
     # Constituents-file health: auto-fetch the official list when missing/stale,
     # then block refresh if we still can't use a valid list.

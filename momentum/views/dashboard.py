@@ -28,9 +28,10 @@ def render(db):
                 "live valuations and momentum rankings.")
     else:
         st.caption(
-            f"Ranking as of **{ranking['as_of']}**  ·  universe snapshot "
-            f"**{ranking['snapshot_date']}** ({ranking['n_universe']} names, "
-            f"{len(ranking['ranked'])} ranked)  ·  prices fetched {fetched_at or '—'}  ·  "
+            f"🕒 Prices fetched **{mdata.format_fetched(fetched_at)}**  ·  latest price "
+            f"bar **{latest_bar or '—'}**  ·  ranking as of **{ranking['as_of']}**  ·  "
+            f"universe snapshot **{ranking['snapshot_date']}** "
+            f"({ranking['n_universe']} names, {len(ranking['ranked'])} ranked)  ·  "
             f"holding **{cfg.num_stocks}** stocks"
         )
 
