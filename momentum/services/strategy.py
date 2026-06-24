@@ -114,9 +114,13 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
             row[f"r{fr['months']}m"] = fr["ret"]
         ranked.append(row)
 
+    # Primary rank: risk-adjusted score (value). Also assign a raw-momentum rank
+    # (by blended return only) so the UI can show both orderings side by side.
     ranked.sort(key=lambda r: r["value"], reverse=True)
     for i, row in enumerate(ranked):
         row["rank"] = i + 1
+    for i, row in enumerate(sorted(ranked, key=lambda r: r["blended"], reverse=True)):
+        row["raw_rank"] = i + 1
     return ranked, excluded
 
 
@@ -368,16 +372,17 @@ def recalc_cash(db, cfg=None):
 # ---------------------------------------------------------------------------
 # Portfolio valuation
 # ---------------------------------------------------------------------------
-def portfolio_value(db, rank_map=None, price_book=None):
+def portfolio_value(db, rank_map=None, raw_rank_map=None, price_book=None):
     """Value current holdings at the latest close. Returns a summary dict.
 
-    ``rank_map`` (symbol -> current rank) annotates each holding with its live
-    rank for the dashboard.
+    ``rank_map`` (symbol -> vol-adjusted rank) and ``raw_rank_map`` (symbol ->
+    raw-momentum rank) annotate each holding with its live ranks for the dashboard.
     """
     cfg = get_config(db)
     if price_book is None:
         price_book = mdata.PriceBook(mdata.load_series())
     rank_map = rank_map or {}
+    raw_rank_map = raw_rank_map or {}
 
     # Entry rank (rank when first bought) and total buy-side charges per symbol,
     # derived from the trade ledger — no denormalised columns needed.
@@ -402,7 +407,7 @@ def portfolio_value(db, rank_map=None, price_book=None):
             "last": last, "value": mkt, "cost": cost, "charges": charges_by.get(h.symbol, 0.0),
             "pnl": mkt - cost, "pnl_pct": ((mkt / cost - 1) * 100) if cost else 0.0,
             "entry_rank": entry_rank.get(h.symbol), "rank": rank_map.get(h.symbol),
-            "entry_date": h.entry_date,
+            "raw_rank": raw_rank_map.get(h.symbol), "entry_date": h.entry_date,
         })
     # Order by entry rank (the order they were bought in), unranked last.
     rows.sort(key=lambda r: (r["entry_rank"] is None, r["entry_rank"] or 0))

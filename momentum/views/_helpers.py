@@ -72,6 +72,10 @@ def rank_map(ranking):
     return {r["symbol"]: r["rank"] for r in ranking["ranked"]}
 
 
+def raw_rank_map(ranking):
+    return {r["symbol"]: r.get("raw_rank") for r in ranking["ranked"]}
+
+
 @st.cache_data(show_spinner="Checking Nifty 500 constituents…")
 def _ensure_constituents(reconstitution_iso):
     # Keyed on the current reconstitution date so it runs once per period per

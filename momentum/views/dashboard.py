@@ -19,8 +19,9 @@ def render(db):
     ranking = H.get_ranking(db) if has_prices else {"ranked": [], "as_of": None,
                                                     "snapshot_date": None, "n_universe": 0}
     rmap = H.rank_map(ranking)
+    rrmap = H.raw_rank_map(ranking)
     pb = H.price_book() if has_prices else None
-    pv = strategy.portfolio_value(db, rank_map=rmap, price_book=pb)
+    pv = strategy.portfolio_value(db, rank_map=rmap, raw_rank_map=rrmap, price_book=pb)
 
     if not has_prices:
         st.info("No price cache yet — holdings are valued at **cost basis**. "
@@ -54,7 +55,8 @@ def render(db):
         st.subheader(f"Holdings ({pv['n_holdings']})")
         hdf = pd.DataFrame([{
             "Entry rank": h["entry_rank"],
-            "Today rank": h["rank"] if h["rank"] is not None else None,
+            "Today rank (vol-adj)": h["rank"] if h["rank"] is not None else None,
+            "Today rank (raw)": h.get("raw_rank"),
             "Rank Δ": (h["entry_rank"] - h["rank"])
                        if (h["rank"] is not None and h["entry_rank"] is not None) else None,
             "Symbol": h["symbol"], "Shares": h["shares"],
@@ -85,23 +87,45 @@ def render(db):
             else:
                 st.success(f"✅ All holdings ranked within top {cfg.replace_rank_threshold}.")
 
-    # --- Top momentum ranking ---
+    # --- Top momentum ranking (both orderings side by side) ---
     if not ranking["ranked"]:
         return
     st.divider()
-    st.subheader("Top momentum ranking")
+    st.subheader("Momentum ranking — risk-adjusted vs raw")
     top_n = st.slider("Show top N", 10, min(100, len(ranking["ranked"])),
                       min(30, len(ranking["ranked"])), step=5)
     held = {h["symbol"] for h in pv["holdings"]}
-    rdf = pd.DataFrame([{
-        "Rank": r["rank"], "Symbol": r["symbol"],
-        "Score": round(r["value"], 4), "Blended ret": round(r["blended"] * 100, 2),
-        "3m %": round(r.get("r3m", 0) * 100, 2), "6m %": round(r.get("r6m", 0) * 100, 2),
-        "9m %": round(r.get("r9m", 0) * 100, 2),
-        "Vol": round(r["vol"], 4) if r.get("vol") else None,
-        "Held": "✓" if r["symbol"] in held else "",
-    } for r in ranking["ranked"][:top_n]])
-    st.dataframe(rdf, use_container_width=True, hide_index=True)
 
-    st.caption("Blended return = weighted 3m/6m/9m return. Score = blended ÷ volatility "
-               "(risk-adjusted). Higher rank = stronger momentum.")
+    col_vol, col_raw = st.columns(2)
+    with col_vol:
+        st.markdown("**Risk-adjusted (volatility)** — *score = blended ÷ daily vol*")
+        vdf = pd.DataFrame([{
+            "Rank": r["rank"], "Symbol": r["symbol"], "Score": round(r["value"], 2),
+            "Raw rank": r.get("raw_rank"), "Held": "✓" if r["symbol"] in held else "",
+        } for r in sorted(ranking["ranked"], key=lambda x: x["rank"])[:top_n]])
+        st.dataframe(vdf, use_container_width=True, hide_index=True)
+    with col_raw:
+        st.markdown("**Raw momentum** — *score = blended 3m/6m/9m return %*")
+        rdf = pd.DataFrame([{
+            "Rank": r.get("raw_rank"), "Symbol": r["symbol"],
+            "Score %": round(r["blended"] * 100, 2),
+            "Vol rank": r["rank"], "Held": "✓" if r["symbol"] in held else "",
+        } for r in sorted(ranking["ranked"], key=lambda x: x.get("raw_rank") or 1e9)[:top_n]])
+        st.dataframe(rdf, use_container_width=True, hide_index=True)
+
+    # Combined per-stock detail (factor breakdown), sorted by risk-adjusted rank.
+    with st.expander("Per-stock detail (factor returns)"):
+        ddf = pd.DataFrame([{
+            "Vol rank": r["rank"], "Raw rank": r.get("raw_rank"), "Symbol": r["symbol"],
+            "Vol score": round(r["value"], 2), "Raw score %": round(r["blended"] * 100, 2),
+            "3m %": round(r.get("r3m", 0) * 100, 2), "6m %": round(r.get("r6m", 0) * 100, 2),
+            "9m %": round(r.get("r9m", 0) * 100, 2),
+            "Daily vol %": round(r["vol"] * 100, 2) if r.get("vol") else None,
+            "Held": "✓" if r["symbol"] in held else "",
+        } for r in ranking["ranked"][:top_n]])
+        st.dataframe(ddf, use_container_width=True, hide_index=True)
+
+    st.caption("**Raw momentum** = weighted 3m/6m/9m return (rewards biggest gainers). "
+               "**Risk-adjusted** = that return ÷ daily volatility (rewards the smoothest "
+               "gainers). Compare the two ranks to see which stocks owe their position to "
+               "low volatility vs raw return.")
