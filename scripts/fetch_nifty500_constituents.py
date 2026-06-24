@@ -1,98 +1,34 @@
 """Download the official NSE Nifty 500 constituents and cache them.
 
-The momentum universe must be the *current* Nifty 500 membership. NSE
-(niftyindices.com) publishes the authoritative list as ``ind_nifty500list.csv``
-(columns: Company Name, Industry, Symbol, Series, ISIN Code). We download it,
-sanity-check it (~500 symbols), and write it into ``momentum/constituents/`` as
-``<reconstitution-date>.csv`` so ``Universe.as_of`` picks it for current dates.
+The momentum universe must be the *current* Nifty 500 membership. The app
+self-heals this on load (``data.ensure_current_constituents``); this script is
+the manual equivalent — useful for a one-off fetch or to force a specific
+reconstitution date. Nifty 500 reconstitutes semi-annually (end of Mar / Sep).
 
-Nifty 500 reconstitutes semi-annually (end of March / end of September), so the
-file is dated to the most recent reconstitution on/before today. Re-run this
-once per reconstitution (or whenever NSE changes the list). Usage:
-
-    python scripts/fetch_nifty500_constituents.py          # auto date
-    python scripts/fetch_nifty500_constituents.py 2026-09-30
+    python scripts/fetch_nifty500_constituents.py            # latest reconstitution
+    python scripts/fetch_nifty500_constituents.py 2026-09-30 # explicit date
 """
-import csv
 import datetime
-import io
 import os
 import sys
 
-import requests
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CONSTITUENTS_DIR = os.path.join(os.path.dirname(HERE), "momentum", "constituents")
-SOURCES = [
-    "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
-    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
-    "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-    "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
-]
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Accept": "text/csv,application/octet-stream,*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-
-def latest_reconstitution(today=None):
-    today = today or datetime.date.today()
-    mar = datetime.date(today.year, 3, 31)
-    sep = datetime.date(today.year, 9, 30)
-    if today >= sep:
-        return sep
-    if today >= mar:
-        return mar
-    return datetime.date(today.year - 1, 9, 30)
-
-
-def download():
-    for url in SOURCES:
-        try:
-            s = requests.Session()
-            s.headers.update(HEADERS)
-            if "nse" in url:
-                try:
-                    s.get("https://www.nseindia.com", timeout=10)
-                except Exception:
-                    pass
-            r = s.get(url, timeout=30)
-            if r.status_code != 200:
-                print(f"  {url} -> HTTP {r.status_code}")
-                continue
-            rows = list(csv.DictReader(io.StringIO(r.text)))
-            syms = [(row.get("Symbol") or "").strip() for row in rows]
-            syms = [x for x in syms if x]
-            if 400 <= len(syms) <= 520:
-                print(f"  {url} -> OK ({len(syms)} symbols)")
-                return r.text, syms
-            print(f"  {url} -> unexpected symbol count {len(syms)}")
-        except Exception as e:  # noqa: BLE001
-            print(f"  {url} -> {type(e).__name__}: {e}")
-    return None, None
+from momentum.services import data as mdata
 
 
 def main(date_str=None):
-    eff = datetime.date.fromisoformat(date_str) if date_str else latest_reconstitution()
+    eff = datetime.date.fromisoformat(date_str) if date_str else mdata.latest_reconstitution()
     print(f"Fetching official Nifty 500 constituents (effective {eff})...")
-    body, syms = download()
-    if body is None:
+    res = mdata.fetch_official_constituents(effective_date=eff)
+    if not res["ok"]:
         raise SystemExit(
-            "Could not download the Nifty 500 list from NSE.\n"
-            "Manual steps:\n"
+            res["error"] + "\n\nManual steps:\n"
             "  1. Open https://www.niftyindices.com/indices/equity/broad-based-indices/nifty-500\n"
-            "  2. Download 'ind_nifty500list.csv' (or the constituents CSV).\n"
-            f"  3. Save it as: {os.path.join(CONSTITUENTS_DIR, eff.isoformat() + '.csv')}\n"
-            "  4. Re-run nothing — it will be picked up on next ranking."
+            "  2. Download the constituents CSV (ind_nifty500list.csv).\n"
+            f"  3. Save it as: {os.path.join(mdata.constituents_dir(), eff.isoformat() + '.csv')}\n"
         )
-    os.makedirs(CONSTITUENTS_DIR, exist_ok=True)
-    out = os.path.join(CONSTITUENTS_DIR, f"{eff.isoformat()}.csv")
-    with open(out, "w") as f:
-        f.write(body)
-    print(f"Saved {len(syms)} symbols -> {out}")
-    print(f"Sample: {syms[:5]}")
+    print(f"Saved {res['count']} symbols -> {res['path']}")
 
 
 if __name__ == "__main__":

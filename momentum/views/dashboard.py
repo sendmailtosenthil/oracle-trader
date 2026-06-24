@@ -11,6 +11,8 @@ def render(db):
     st.title("📈 Momentum — Nifty500")
 
     cfg = strategy.get_config(db)
+    # Self-heal the Nifty 500 universe (downloads only when missing/stale).
+    H.auto_refresh_constituents()
     n_files, fetched_at, latest_bar = mdata.cache_meta()
 
     has_prices = n_files > 0

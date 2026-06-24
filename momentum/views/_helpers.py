@@ -44,7 +44,7 @@ def price_book():
 
 
 @st.cache_data(show_spinner="Scoring Nifty500 momentum…")
-def _ranking(sig, factors_json, vol_enabled, vol_months, min_cov):
+def _ranking(sig, constituents_date, factors_json, vol_enabled, vol_months, min_cov):
     pb, cal = _bundle(sig)
     as_of = cal.last()
     if as_of is None:
@@ -63,12 +63,26 @@ def _ranking(sig, factors_json, vol_enabled, vol_months, min_cov):
 def get_ranking(db):
     """Cached momentum ranking for the latest cached trading day."""
     cfg = strategy.get_config(db)
-    return _ranking(cache_sig(), cfg.factors_json, bool(cfg.vol_enabled),
+    cons_date = mdata.universe_status().get("snapshot_date")
+    return _ranking(cache_sig(), cons_date, cfg.factors_json, bool(cfg.vol_enabled),
                     cfg.vol_months, cfg.min_history_coverage)
 
 
 def rank_map(ranking):
     return {r["symbol"]: r["rank"] for r in ranking["ranked"]}
+
+
+@st.cache_data(show_spinner="Checking Nifty 500 constituents…")
+def _ensure_constituents(reconstitution_iso):
+    # Keyed on the current reconstitution date so it runs once per period per
+    # process; auto-downloads the official list only when missing/stale.
+    return mdata.ensure_current_constituents()
+
+
+def auto_refresh_constituents():
+    """Self-heal the universe file on load. Returns the ensure-result dict.
+    Cheap in the normal case (no network unless the file is missing/stale)."""
+    return _ensure_constituents(mdata.latest_reconstitution().isoformat())
 
 
 def clear_caches():

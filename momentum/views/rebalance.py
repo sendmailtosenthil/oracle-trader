@@ -94,8 +94,17 @@ def _render_refresh(db, cfg):
     c2.metric("Last fetched", fetched_at or "—")
     c3.metric("Latest bar", latest_bar or "—")
 
-    # Constituents-file health: block refresh if we can't use a valid list,
-    # warn if it's stale (a reconstitution has happened since the snapshot).
+    # Constituents-file health: auto-fetch the official list when missing/stale,
+    # then block refresh if we still can't use a valid list.
+    ensure = H.auto_refresh_constituents()
+    if ensure.get("action") == "fetched":
+        st.success(f"Auto-updated Nifty 500 constituents → snapshot "
+                   f"{ensure.get('fetched_date')} ({ensure.get('count')} stocks).")
+    elif ensure.get("action") == "failed":
+        st.warning("⚠️ Couldn't auto-update constituents from NSE "
+                   f"({ensure.get('error')}). Using the existing file; you can run "
+                   "`python scripts/fetch_nifty500_constituents.py` manually.")
+
     status = mdata.universe_status()
     if not status["ok"]:
         st.error("🚨 Cannot use the Nifty 500 constituents file — " + status["message"])

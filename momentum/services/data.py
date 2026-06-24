@@ -342,6 +342,82 @@ def universe_status():
     return {"ok": True, "snapshot_date": latest["date"], "count": count, "stale": stale, "message": msg}
 
 
+# Official NSE Nifty 500 constituents (Company Name,Industry,Symbol,Series,ISIN).
+_NIFTY500_SOURCES = [
+    "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+    "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+    "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+    "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+]
+_NSE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept": "text/csv,application/octet-stream,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def download_official_nifty500(timeout=30):
+    """Download the official Nifty 500 list from NSE. Returns (csv_text, symbols)
+    or (None, None) if every source fails."""
+    import requests
+    for url in _NIFTY500_SOURCES:
+        try:
+            s = requests.Session()
+            s.headers.update(_NSE_HEADERS)
+            if "nse" in url:
+                try:
+                    s.get("https://www.nseindia.com", timeout=10)
+                except Exception:
+                    pass
+            r = s.get(url, timeout=timeout)
+            if r.status_code != 200:
+                continue
+            rows = list(csv.DictReader(io.StringIO(r.text)))
+            syms = [(row.get("Symbol") or "").strip() for row in rows]
+            syms = [x for x in syms if x]
+            if 400 <= len(syms) <= 520:
+                return r.text, syms
+        except Exception:  # noqa: BLE001
+            continue
+    return None, None
+
+
+def fetch_official_constituents(effective_date=None, timeout=30):
+    """Download + cache the official list as ``<reconstitution-date>.csv``.
+
+    Returns ``{ok, count, path, date, error}``.
+    """
+    eff = effective_date or latest_reconstitution()
+    body, syms = download_official_nifty500(timeout=timeout)
+    if not body:
+        return {"ok": False, "count": 0, "path": None, "date": eff.isoformat(),
+                "error": "Could not download the Nifty 500 list from NSE."}
+    os.makedirs(constituents_dir(), exist_ok=True)
+    out = os.path.join(constituents_dir(), f"{eff.isoformat()}.csv")
+    try:
+        with open(out, "w") as f:
+            f.write(body)
+    except OSError as exc:
+        return {"ok": False, "count": len(syms), "path": out, "date": eff.isoformat(),
+                "error": f"Downloaded but could not write {out}: {exc}"}
+    return {"ok": True, "count": len(syms), "path": out, "date": eff.isoformat(), "error": ""}
+
+
+def ensure_current_constituents(timeout=30):
+    """Self-heal the universe: if the constituents file is missing or stale for the
+    current reconstitution, download the official list. Network is touched ONLY when
+    a refresh is actually needed. Returns ``{action, ...universe_status}``.
+    """
+    status = universe_status()
+    if status["ok"] and not status["stale"]:
+        return {"action": "none", **status}
+    res = fetch_official_constituents(timeout=timeout)
+    if res["ok"]:
+        return {"action": "fetched", "fetched_date": res["date"], **universe_status()}
+    return {"action": "failed", "error": res["error"], **status}
+
+
 def _parse_symbols(path):
     out = []
     with open(path, newline="") as f:
