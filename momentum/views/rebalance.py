@@ -89,23 +89,39 @@ def _render_plan(db, cfg):
 
 
 # --------------------------------------------------------------------------
-def _render_refresh(db, cfg):
-    st.write("**Refresh prices** pulls the latest daily close (up to today) for all "
-             "500 Nifty500 stocks and the ranking recomputes from it. Momentum uses "
-             "3/6/9-month returns, so the app keeps ~1 year of daily history — the "
-             "**Fetch history from** date only controls how far back that history is "
-             "loaded, *not* how recent the prices are (the end is always today). "
-             "Leave it at **today** for a daily update; pick an older date only to "
-             "build or repair the lookback. New bars merge in; existing history is kept.")
+def _do_refresh(broker, fetch_syms, from_date):
+    """Run a price refresh from ``from_date`` → today, persist the summary, rerun."""
+    log_box = st.empty()
+    msgs = []
 
-    # Show (and clear) the summary of the previous refresh, which survives the
-    # rerun we trigger so the metrics below reflect the new cache.
+    def cb(m):
+        msgs.append(m)
+        log_box.code("\n".join(msgs[-12:]))
+
+    with st.spinner("Fetching daily candles from Zerodha..."):
+        result = mdata.refresh_prices(
+            enctoken=broker.enctoken, user_id=broker.user_id,
+            symbols=fetch_syms, history_from=from_date, progress_cb=cb,
+        )
+    H.clear_caches()
+    st.session_state["mom_refresh_result"] = result
+    st.rerun()
+
+
+def _render_refresh(db, cfg):
+    st.write("Pull the latest daily close for the Nifty 500 and recompute the ranking. "
+             "Prices are fetched **only when you click** — never automatically.")
+
+    # Summary of the previous refresh (survives the rerun we trigger so the
+    # metrics below reflect the just-written cache).
     last = st.session_state.pop("mom_refresh_result", None)
     if last:
         if last["fatal"]:
             st.error(f"Fatal: {last['fatal']}")
         else:
-            st.success(f"Updated {last['updated']} symbol(s), skipped {last['skipped']}.")
+            ts = mdata.format_fetched(last.get("fetched_at"))
+            st.success(f"Updated {last['updated']} symbol(s), skipped {last['skipped']} "
+                       f"· prices as of **{ts}**.")
             if last["errors"]:
                 with st.expander(f"{len(last['errors'])} warning(s)"):
                     st.write("\n".join(last["errors"][:50]))
@@ -113,13 +129,14 @@ def _render_refresh(db, cfg):
     n_files, fetched_at, latest_bar, earliest_bar = mdata.cache_meta()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cached symbols", n_files)
-    c2.metric("Last fetched", mdata.format_fetched(fetched_at),
-              help="When prices were last pulled from Zerodha (IST).")
-    c3.metric("History from", earliest_bar or "—")
+    c2.metric("🕒 Latest price as of", mdata.format_fetched(fetched_at),
+              help="When the prices in the cache were last pulled (IST). Daily bars "
+                   "have no intraday time, so this fetch moment is the price as-of "
+                   "stamp. Shows a full time after your next refresh.")
+    c3.metric("History from", earliest_bar or "—", help="Earliest cached bar (lookback depth).")
     c4.metric("Latest bar", latest_bar or "—", help="Date of the most recent price bar.")
 
-    # Constituents-file health: auto-fetch the official list when missing/stale,
-    # then block refresh if we still can't use a valid list.
+    # Constituents-file health: auto-fetch the official list when missing/stale.
     ensure = H.auto_refresh_constituents()
     if ensure.get("action") == "fetched":
         st.success(f"Auto-updated Nifty 500 constituents → snapshot "
@@ -135,8 +152,6 @@ def _render_refresh(db, cfg):
         return
     if status["stale"]:
         st.warning("⚠️ " + status["message"])
-    st.caption(f"Universe: **{status['count']}** stocks (Nifty 500 snapshot "
-               f"**{status['snapshot_date']}**).")
 
     broker = db.query(BrokerConfig).filter(BrokerConfig.broker_name == 'ZERODHA').first()
     if not broker or not is_zerodha_token_valid(broker.enctoken, broker.user_id):
@@ -145,58 +160,41 @@ def _render_refresh(db, cfg):
     st.success("Zerodha token is valid.")
 
     today = datetime.date.today()
-    # Momentum needs ~9-month lookback (+buffer). The default resumes from the last
-    # cached bar (the date history is pulled to and used for calculation), so a
-    # refresh only fetches the gap to today — fewer requests. If the cache lacks the
-    # lookback (fresh start, or a prior short-range fetch truncated it), default the
-    # start back ~15 months to (re)build it.
     full_start = today - datetime.timedelta(days=455)
     lookback_ok = bool(earliest_bar) and earliest_bar <= (today - datetime.timedelta(days=300)).isoformat()
-    default_from = datetime.date.fromisoformat(latest_bar) if (lookback_ok and latest_bar) else full_start
 
-    history_from = st.date_input(
-        "Fetch history from", value=default_from, max_value=today, format="YYYY-MM-DD",
-        help="Defaults to the last cached price date, so a refresh only tops up the "
-             "gap to today (fewer Zerodha requests). New bars merge into the cache. "
-             "For a first build or to repair history, pick ~15 months back.",
-    )
-    if not lookback_ok:
-        st.warning(f"⚠️ Cached history is short (earliest bar: {earliest_bar or 'none'}). "
-                   f"Momentum needs ~9 months — fetch from **{full_start.isoformat()}** "
-                   "or earlier to (re)build the lookback before ranking will be meaningful.")
-
-    # Fetch only the CURRENT index membership plus any held stocks (so holdings
-    # that have since left the index still get priced). ~500 names in practice.
+    # Fetch the CURRENT index membership plus any held stocks (so holdings that
+    # have left the index still get priced). ~500 names in practice.
     from common.database import MomentumHolding
     current = {mdata.to_yahoo(s) for s in mdata.Universe.load().latest()}
     held = {h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()}
     fetch_syms = sorted(current | held)
-    extra = len(held - current)
-    st.caption(f"{len(fetch_syms)} symbols to fetch — current Nifty500 membership "
-               f"({len(current)})" + (f" + {extra} held name(s) outside it" if extra else "")
-               + ". Daily candles, rate-limited (a few minutes).")
-    st.info("Prices are fetched **only when you click below** — the app never "
-            "auto-downloads the 500 from Zerodha. Run this manually when you want "
-            "fresh prices/ranks.")
 
-    if st.button("⬇️ Refresh prices from Zerodha", type="primary"):
-        log_box = st.empty()
-        msgs = []
+    st.divider()
+    # --- PRIMARY: daily latest-price refresh (no date to pick) ---
+    st.subheader("🔄 Refresh latest prices")
+    if lookback_ok:
+        st.caption(f"Fetches today's close for all {len(fetch_syms)} stocks "
+                   f"(tops up from the last bar **{latest_bar}** → today) and re-ranks. "
+                   "This is the daily action — no historical re-download.")
+        if st.button("🔄 Refresh now (latest prices)", type="primary"):
+            _do_refresh(broker, fetch_syms, datetime.date.fromisoformat(latest_bar))
+    else:
+        st.warning(f"⚠️ Cached history is too short (earliest bar: {earliest_bar or 'none'}) "
+                   "for the ~9-month momentum lookback. Build the history once below "
+                   "before the daily refresh and ranking will be meaningful.")
 
-        def cb(m):
-            msgs.append(m)
-            log_box.code("\n".join(msgs[-12:]))
-
-        with st.spinner("Fetching daily candles..."):
-            result = mdata.refresh_prices(
-                enctoken=broker.enctoken, user_id=broker.user_id,
-                symbols=fetch_syms,
-                history_from=history_from, progress_cb=cb,
-            )
-        H.clear_caches()
-        # Persist the summary and rerun so the metrics above reflect the new cache.
-        st.session_state["mom_refresh_result"] = result
-        st.rerun()
+    # --- SECONDARY: one-time history build / repair (with date picker) ---
+    with st.expander("⚙️ Build / repair price history (one-time)", expanded=not lookback_ok):
+        st.caption("Loads ~15 months of daily candles so the 3/6/9-month lookback "
+                   "exists. Needed only for first setup or to repair gaps — not for "
+                   "daily use. New bars merge in; existing history is kept.")
+        history_from = st.date_input(
+            "Fetch history from", value=full_start, max_value=today, format="YYYY-MM-DD",
+            help="Start date for the historical daily candles (end is always today).",
+        )
+        if st.button("⬇️ Fetch history from Zerodha"):
+            _do_refresh(broker, fetch_syms, history_from)
 
 
 # --------------------------------------------------------------------------
