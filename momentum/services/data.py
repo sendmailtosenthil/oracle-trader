@@ -301,6 +301,47 @@ class Universe:
                 "stale": chosen["date"] != iso, "before_first": False}
 
 
+def latest_reconstitution(today=None):
+    """Most recent Nifty 500 reconstitution date (end of Mar / Sep) on/before today."""
+    today = today or datetime.date.today()
+    mar = datetime.date(today.year, 3, 31)
+    sep = datetime.date(today.year, 9, 30)
+    if today >= sep:
+        return sep
+    if today >= mar:
+        return mar
+    return datetime.date(today.year - 1, 9, 30)
+
+
+def universe_status():
+    """Health of the constituents file backing the momentum universe.
+
+    Returns ``{ok, snapshot_date, count, stale, message}``. ``ok`` is False when
+    the file is missing or implausibly small (can't be used); ``stale`` is True
+    when a newer reconstitution has happened since the latest snapshot.
+    """
+    u = Universe.load()
+    if not u.snapshots:
+        return {"ok": False, "snapshot_date": None, "count": 0, "stale": False,
+                "message": ("No Nifty 500 constituents found in momentum/constituents/. "
+                            "Run `python scripts/fetch_nifty500_constituents.py` to download "
+                            "the official list (or place ind_nifty500list.csv there).")}
+    latest = u.snapshots[-1]
+    count = len(latest["symbols"])
+    if count < 400:
+        return {"ok": False, "snapshot_date": latest["date"], "count": count, "stale": False,
+                "message": (f"Constituents file looks incomplete ({count} symbols, expected ~500). "
+                            "Re-fetch the official Nifty 500 list.")}
+    expected = latest_reconstitution()
+    stale = datetime.date.fromisoformat(latest["date"]) < expected
+    msg = ""
+    if stale:
+        msg = (f"Constituents dated {latest['date']}, but a reconstitution occurred on "
+               f"{expected.isoformat()} — the list may be stale. Re-run "
+               "`python scripts/fetch_nifty500_constituents.py`.")
+    return {"ok": True, "snapshot_date": latest["date"], "count": count, "stale": stale, "message": msg}
+
+
 def _parse_symbols(path):
     out = []
     with open(path, newline="") as f:

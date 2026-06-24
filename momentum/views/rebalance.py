@@ -94,6 +94,17 @@ def _render_refresh(db, cfg):
     c2.metric("Last fetched", fetched_at or "—")
     c3.metric("Latest bar", latest_bar or "—")
 
+    # Constituents-file health: block refresh if we can't use a valid list,
+    # warn if it's stale (a reconstitution has happened since the snapshot).
+    status = mdata.universe_status()
+    if not status["ok"]:
+        st.error("🚨 Cannot use the Nifty 500 constituents file — " + status["message"])
+        return
+    if status["stale"]:
+        st.warning("⚠️ " + status["message"])
+    st.caption(f"Universe: **{status['count']}** stocks (Nifty 500 snapshot "
+               f"**{status['snapshot_date']}**).")
+
     broker = db.query(BrokerConfig).filter(BrokerConfig.broker_name == 'ZERODHA').first()
     if not broker or not is_zerodha_token_valid(broker.enctoken, broker.user_id):
         st.error("🚨 Zerodha enctoken missing or expired. Set it in **Broker Setup** first.")
