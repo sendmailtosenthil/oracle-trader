@@ -37,6 +37,13 @@ PACE_SECONDS = float(os.environ.get("DOWNLOADER_PACE_SECONDS", "0.2"))
 # Analytics page; older months are pruned. Set to 0 to keep everything.
 KEEP_MONTHS = int(os.environ.get("DOWNLOADER_KEEP_MONTHS", "2"))
 
+# Resource guard: a download is aborted (and an alert emailed) if free disk or
+# available RAM is below the hard floor; if RAM is merely low we drop to a
+# single worker to cap memory. Tunable via env for the specific VPS.
+MIN_FREE_DISK_MB = float(os.environ.get("DOWNLOADER_MIN_FREE_DISK_MB", "2000"))
+MIN_RAM_MB = float(os.environ.get("DOWNLOADER_MIN_RAM_MB", "300"))
+LOW_RAM_MB = float(os.environ.get("DOWNLOADER_LOW_RAM_MB", "700"))
+
 INDEX_HEADER = "symbol,timestamp,open,high,low,close,volume"
 CONTRACT_HEADER = "symbol,expiry,strike,type,timestamp,open,high,low,close,volume,oi"
 
@@ -149,17 +156,39 @@ def run_download(
         vix_token = client.vix_token()
 
         os.makedirs(DATA_ROOT, exist_ok=True)
+
+        # Resource guard: abort on critically low disk/RAM, degrade on low RAM.
+        workers = _preflight_guard(report)
+        if workers is None:
+            return report  # report.fatal set + alert emailed by the guard
+        if workers != MAX_CONCURRENCY:
+            emit(f"Resource guard: running with {workers} worker(s) to limit memory.")
+
         touched_folders = {}  # folder_name -> requires_upload(bool)
 
+        stop = False
         for task in tasks:
+            if stop:
+                break
             for d in dates:
+                # Mid-run disk guard: stop cleanly before a day if disk runs low.
+                free_disk, _ = _resource_snapshot()
+                if free_disk is not None and free_disk < MIN_FREE_DISK_MB:
+                    msg = f"Stopped mid-run: free disk fell to {free_disk:.0f} MB (< {MIN_FREE_DISK_MB:.0f} MB)."
+                    report.errors.append(msg)
+                    _guard_email("⚠️ Oracle Download stopped — low disk",
+                                 f"<h2>⚠️ Download stopped mid-run</h2><p>{msg}</p>"
+                                 f"<p>Already-downloaded days were kept. Free up space (old data is in Drive) and retry.</p>")
+                    stop = True
+                    break
+
                 date_str = d.isoformat()
                 folder_name = f"{task['symbol'].lower()}-{_MONTHS[d.month - 1]}-{d.year}"
                 folder_path = os.path.join(DATA_ROOT, folder_name)
                 os.makedirs(folder_path, exist_ok=True)
                 emit(f"{task['symbol']} {date_str}: downloading index...")
 
-                day = _download_day(client, task, d, date_str, vix_token, emit)
+                day = _download_day(client, task, d, date_str, vix_token, emit, max_workers=workers)
                 if day is None:
                     continue  # holiday / no data
                 report.days.append(day)
@@ -188,7 +217,60 @@ def run_download(
     return report
 
 
-def _download_day(client, task, d, date_str, vix_token, emit):
+def _resource_snapshot():
+    from common.resources import snapshot
+    return snapshot(DATA_ROOT)
+
+
+def _guard_email(subject, body):
+    try:
+        from common.notifications import send_email
+        send_email(body, subject)
+    except Exception:  # noqa: BLE001 - alerting must never break a run
+        pass
+
+
+def _preflight_guard(report):
+    """Pre-run resource check. Returns the worker cap, or None to abort.
+
+    Aborts (and emails) when free disk or available RAM is below the hard floor;
+    drops to a single worker (and emails) when RAM is merely low. A ``None`` RAM
+    reading (non-Linux/unknown) is treated as "don't block".
+    """
+    disk, ram = _resource_snapshot()
+    disk_txt = f"{disk:.0f} MB" if disk is not None else "n/a"
+    ram_txt = f"{ram:.0f} MB" if ram is not None else "n/a"
+
+    if disk is not None and disk < MIN_FREE_DISK_MB:
+        msg = f"Aborted before download: only {disk_txt} free disk (need ≥ {MIN_FREE_DISK_MB:.0f} MB)."
+        report.fatal = msg
+        report.errors.append(msg)
+        _guard_email("⚠️ Oracle Download blocked — low disk",
+                     f"<h2>⚠️ Download blocked: low disk</h2><p>{msg}</p>"
+                     f"<p>Available RAM: {ram_txt}. Free up space (old data is in Drive) and retry.</p>")
+        return None
+
+    if ram is not None and ram < MIN_RAM_MB:
+        msg = f"Aborted before download: only {ram_txt} RAM available (need ≥ {MIN_RAM_MB:.0f} MB)."
+        report.fatal = msg
+        report.errors.append(msg)
+        _guard_email("⚠️ Oracle Download blocked — low RAM",
+                     f"<h2>⚠️ Download blocked: low RAM</h2><p>{msg}</p>"
+                     f"<p>Free disk: {disk_txt}.</p>")
+        return None
+
+    workers = MAX_CONCURRENCY
+    if ram is not None and ram < LOW_RAM_MB:
+        workers = 1
+        note = f"Low RAM ({ram_txt}) — running single-threaded to limit memory."
+        report.errors.append(note)
+        _guard_email("⚠️ Oracle Download degraded — low RAM",
+                     f"<h2>⚠️ Download running in low-memory mode</h2><p>{note}</p>"
+                     f"<p>Free disk: {disk_txt}.</p>")
+    return workers
+
+
+def _download_day(client, task, d, date_str, vix_token, emit, max_workers=None):
     """Download all instrument types for one (symbol, day). Returns DayResult or None."""
     frm = datetime.datetime.combine(d, datetime.time(9, 15, 0))
     to = datetime.datetime.combine(d, datetime.time(15, 30, 0))
@@ -233,7 +315,7 @@ def _download_day(client, task, d, date_str, vix_token, emit):
     futures = client.filter_instruments(sym, instrument_type="FUT", min_expiry=d)
     try:
         emit(f"{sym} {date_str}: downloading {len(futures)} futures...")
-        rows, _, _ = _download_contracts(client, futures, frm, to, fut_file)
+        rows, _, _ = _download_contracts(client, futures, frm, to, fut_file, max_workers=max_workers)
         day.futures_status = "completed"
         if rows:
             day.files.append(_file_result(fut_file, rows))
@@ -249,7 +331,8 @@ def _download_day(client, task, d, date_str, vix_token, emit):
     day.pe_instruments = sum(1 for i in options if i["instrument_type"] == "PE")
     try:
         emit(f"{sym} {date_str}: downloading {len(options)} option contracts...")
-        rows, ce, pe = _download_contracts(client, options, frm, to, opt_file, atm_strike=day.atm_strike)
+        rows, ce, pe = _download_contracts(client, options, frm, to, opt_file,
+                                           atm_strike=day.atm_strike, max_workers=max_workers)
         day.options_status = "completed"
         day.ce_rows = ce
         day.pe_rows = pe
@@ -263,23 +346,29 @@ def _download_day(client, task, d, date_str, vix_token, emit):
     return day
 
 
-def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0):
-    """Download many contracts in parallel and write one CSV. Returns (rows, ce_atm, pe_atm).
+def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0, max_workers=None):
+    """Download many contracts in parallel and stream them to one CSV.
 
-    Uses a self-ramping worker pool with per-worker rate limiting (ported from
-    quant-downloader): begins with a single worker and adds one every RAMP_STEP
-    processed contracts up to MAX_CONCURRENCY, each pausing PACE_SECONDS between
-    requests. A fatal auth error stops every worker; per-contract failures are
-    tolerated. The CSV is written once, single-threaded, after all fetches.
+    Self-ramping worker pool with per-worker rate limiting (ported from
+    quant-downloader): starts with one worker and adds one every RAMP_STEP
+    processed contracts up to ``max_workers`` (defaults to MAX_CONCURRENCY),
+    each pausing PACE_SECONDS between requests. Each contract's rows are appended
+    to the file as soon as it is fetched (under a lock), so peak memory stays
+    bounded regardless of chain size. A fatal auth error stops every worker;
+    per-contract failures are tolerated. Returns (rows, ce_atm_rows, pe_atm_rows).
     """
     if not instruments:
         return 0, 0, 0
 
-    results = {}            # tradingsymbol -> (instrument, candles)
-    lock = threading.Lock()
+    cap = max_workers or MAX_CONCURRENCY
+    lock = threading.Lock()  # guards state, counts, and file writes
     threads = []
     state = {"index": 0, "processed": 0, "workers": 0, "concurrency": 1, "fatal": None}
+    counts = {"rows": 0, "ce": 0, "pe": 0}
     n = len(instruments)
+
+    f = open(file_path, "w")
+    f.write(CONTRACT_HEADER + "\n")
 
     def spawn_worker():
         t = threading.Thread(target=worker, daemon=True)
@@ -305,8 +394,23 @@ def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0):
                         )
                     )
                     if candles:
+                        expiry = (instr.get("expiry") or "")[:10]
+                        strike = instr.get("strike", 0)
+                        itype = instr.get("instrument_type", "")
+                        block = "".join(
+                            f"{instr['tradingsymbol']},{expiry},{strike},{itype},"
+                            f"{c['timestamp']},{c['open']},{c['high']},{c['low']},"
+                            f"{c['close']},{c['volume']},{c.get('oi', 0)}\n"
+                            for c in candles
+                        )
+                        is_atm = atm_strike and strike == atm_strike
                         with lock:
-                            results[instr["tradingsymbol"]] = (instr, candles)
+                            f.write(block)  # stream out — candles are freed right after
+                            counts["rows"] += len(candles)
+                            if is_atm and itype == "CE":
+                                counts["ce"] += len(candles)
+                            elif is_atm and itype == "PE":
+                                counts["pe"] += len(candles)
                 except FatalAuthError as exc:
                     with lock:
                         state["fatal"] = exc
@@ -319,7 +423,7 @@ def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0):
                 with lock:
                     state["processed"] += 1
                     if (state["processed"] % RAMP_STEP == 0
-                            and state["concurrency"] < MAX_CONCURRENCY):
+                            and state["concurrency"] < cap):
                         state["concurrency"] += 1
                         ramp = True
                 if ramp:
@@ -329,42 +433,24 @@ def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0):
             with lock:
                 state["workers"] -= 1
 
-    spawn_worker()
-    # Wait for all (including dynamically-spawned) workers to drain.
-    while True:
-        with lock:
-            done = state["workers"] == 0 and (state["index"] >= n or state["fatal"] is not None)
-        if done:
-            break
-        time.sleep(0.2)
-    for t in threads:
-        t.join()
+    try:
+        spawn_worker()
+        # Wait for all (including dynamically-spawned) workers to drain.
+        while True:
+            with lock:
+                done = state["workers"] == 0 and (state["index"] >= n or state["fatal"] is not None)
+            if done:
+                break
+            time.sleep(0.2)
+        for t in threads:
+            t.join()
+    finally:
+        f.close()
 
     if state["fatal"] is not None:
         raise state["fatal"]
 
-    total_rows = 0
-    ce_atm = 0
-    pe_atm = 0
-    with open(file_path, "w") as f:
-        f.write(CONTRACT_HEADER + "\n")
-        for instr, candles in results.values():
-            expiry = (instr.get("expiry") or "")[:10]
-            strike = instr.get("strike", 0)
-            itype = instr.get("instrument_type", "")
-            for c in candles:
-                f.write(
-                    f"{instr['tradingsymbol']},{expiry},{strike},{itype},"
-                    f"{c['timestamp']},{c['open']},{c['high']},{c['low']},"
-                    f"{c['close']},{c['volume']},{c.get('oi', 0)}\n"
-                )
-                total_rows += 1
-                if atm_strike and strike == atm_strike:
-                    if itype == "CE":
-                        ce_atm += 1
-                    elif itype == "PE":
-                        pe_atm += 1
-    return total_rows, ce_atm, pe_atm
+    return counts["rows"], counts["ce"], counts["pe"]
 
 
 def _write_index_csv(file_path, symbol, candles):

@@ -6,7 +6,7 @@ import pytz
 from common.database import Strategy, PendingSwitch, Portfolio, init_db, get_db
 from common.notifications import send_email
 from bees.donchian import evaluate_donchian_intraday
-from downloader.jobs import run_db_backup
+from downloader.jobs import run_daily_download, run_db_backup
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -137,9 +137,10 @@ def run_bot():
     # End of Day Scan at 3:35 PM IST
     schedule.every().day.at("15:35", "Asia/Kolkata").do(check_intraday_signals)
 
-    # NOTE: the automatic options-data download is intentionally DISABLED — it is
-    # too memory-heavy for this host. Trigger it manually from the Downloader page
-    # when needed.
+    # Daily market-data download at 3:40 PM IST (after market close). Runs only
+    # if the enctoken is active, and is self-guarding: the downloader aborts or
+    # degrades to single-threaded under low RAM/disk and emails an alert.
+    schedule.every().day.at("15:40", "Asia/Kolkata").do(run_daily_download)
 
     # Daily database backup to Google Drive at 4:00 PM IST (lightweight: just a
     # SQLite snapshot; skipped if a download is still running).
