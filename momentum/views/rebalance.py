@@ -101,17 +101,14 @@ def _render_plan(db, cfg):
         per_part = plan.get("per_part", 0.0)
         bdf = pd.DataFrame([{
             "Symbol": b["symbol"], "Rank": b["rank"], "Shares": int(b["shares"]),
-            "Price": round(b["price"], 2), "Deployable/stock": round(per_part, 0),
+            "Price": round(b["price"], 2),
         } for b in plan["buys"]])
         eb = st.data_editor(
             bdf, hide_index=True, use_container_width=True, num_rows="fixed",
-            disabled=["Symbol", "Rank", "Deployable/stock"], key="mom_buy_editor",
+            disabled=["Symbol", "Rank"], key="mom_buy_editor",
             column_config={
                 "Shares": st.column_config.NumberColumn(min_value=0, step=1),
                 "Price": st.column_config.NumberColumn(min_value=0.0, step=0.05, format="%.2f"),
-                "Deployable/stock": st.column_config.NumberColumn(
-                    format="₹%d", help="Capital deployable per stock — capital ÷ stocks for "
-                                       "deploy, pot ÷ replacements for replace."),
             },
         )
         for _, r in eb.iterrows():
@@ -123,6 +120,30 @@ def _render_plan(db, cfg):
                 "symbol": r["Symbol"], "rank": rank_by.get(r["Symbol"]), "shares": shares,
                 "price": price, "cost": shares * price, "charges": chg,
             })
+
+        # Live cost-vs-deployable view (recomputed from edits): cost in RED when it
+        # exceeds the deployable target, DARK GREEN when under.
+        if edited_buys:
+            cdf = pd.DataFrame([{
+                "Symbol": b["symbol"], "Shares": b["shares"], "Price": round(b["price"], 2),
+                "Cost": round(b["cost"], 0), "Deployable": round(per_part, 0),
+                "Gap": round(per_part - b["cost"], 0),
+            } for b in edited_buys])
+
+            def _hl(row):
+                styles = [""] * len(row)
+                i = cdf.columns.get_loc("Cost")
+                if row["Cost"] > row["Deployable"]:
+                    styles[i] = "color: #c0392b; font-weight: 700"   # red — over target
+                elif row["Cost"] < row["Deployable"]:
+                    styles[i] = "color: #1b5e20; font-weight: 700"   # dark green — under
+                return styles
+
+            styled = (cdf.style.apply(_hl, axis=1)
+                      .format({"Price": "₹{:,.2f}", "Cost": "₹{:,.0f}",
+                               "Deployable": "₹{:,.0f}", "Gap": "₹{:,.0f}"}))
+            st.caption("Deployed cost vs target per stock — 🔴 over deployable · 🟢 under:")
+            st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # --- Recompute the summary from the (possibly edited) rows ---
     sell_net = sum(s["price"] * s["shares"] - s["charges"] for s in edited_sells)
