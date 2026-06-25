@@ -107,6 +107,26 @@ def load_series(symbols=None):
     return series
 
 
+def prune_cache(keep_symbols):
+    """Delete cached price files for symbols not in ``keep_symbols``.
+
+    Keeps the cache to exactly the relevant set (current Nifty 500 ∪ holdings) so
+    stale/delisted names don't pile up or skew coverage metrics. Returns the count
+    removed.
+    """
+    keep = set(keep_symbols)
+    removed = 0
+    for path in glob.glob(os.path.join(cache_dir(), "*.json")):
+        sym = os.path.basename(path)[:-5]
+        if sym not in keep:
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def cache_meta():
     """Return (n_symbols, latest_fetched_at, latest_bar_date, earliest_bar_date)."""
     files = glob.glob(os.path.join(cache_dir(), "*.json"))

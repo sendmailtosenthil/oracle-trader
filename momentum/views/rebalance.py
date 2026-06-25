@@ -103,6 +103,10 @@ def _do_refresh(broker, fetch_syms, from_date):
             enctoken=broker.enctoken, user_id=broker.user_id,
             symbols=fetch_syms, history_from=from_date, progress_cb=cb,
         )
+    # Keep the cache to exactly the fetched set (current 500 ∪ holdings) — drop
+    # stale/delisted leftovers so the count and coverage stay honest.
+    if not result["fatal"]:
+        result["pruned"] = mdata.prune_cache(fetch_syms)
     H.clear_caches()
     st.session_state["mom_refresh_result"] = result
     st.rerun()
@@ -120,8 +124,10 @@ def _render_refresh(db, cfg):
             st.error(f"Fatal: {last['fatal']}")
         else:
             ts = mdata.format_fetched(last.get("fetched_at"))
+            pruned = last.get("pruned") or 0
+            extra = f" · pruned {pruned} stale symbol(s)" if pruned else ""
             st.success(f"Updated {last['updated']} symbol(s), skipped {last['skipped']} "
-                       f"· prices as of **{ts}**.")
+                       f"· prices as of **{ts}**{extra}.")
             if last["errors"]:
                 with st.expander(f"{len(last['errors'])} warning(s)"):
                     st.write("\n".join(last["errors"][:50]))
@@ -168,6 +174,11 @@ def _render_refresh(db, cfg):
     current = {mdata.to_yahoo(s) for s in mdata.Universe.load().latest()}
     held = {h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()}
     fetch_syms = sorted(current | held)
+    extra_held = len(held - current)
+    st.caption(f"Fetch set: current Nifty 500 ({len(current)})"
+               + (f" + {extra_held} held name(s) outside the index" if extra_held else "")
+               + f" = **{len(fetch_syms)}** stocks. The cache is pruned to exactly this "
+               "set on each refresh (stale names removed).")
 
     # Decide readiness from whether ranking ACTUALLY produces results — the
     # current universe must have enough history, not just *some* cached symbol.
