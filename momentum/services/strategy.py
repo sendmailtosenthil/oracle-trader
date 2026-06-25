@@ -124,40 +124,47 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
     return ranked, excluded
 
 
-def compute_ranking(db, as_of=None, persist=True):
-    """Load cached prices, score the point-in-time universe, persist the snapshot.
+def rank_universe(price_book, calendar, cfg, as_of=None):
+    """Score the point-in-time Nifty 500 universe — the single ranking entry point.
 
-    Returns ``{as_of, ranked, excluded, snapshot_date, n_universe}``.
+    Builds candidates from the membership snapshot effective on ``as_of`` (latest
+    cached trading day by default) and scores them. Returns
+    ``{as_of, ranked, excluded, snapshot_date, n_universe}``. Pure (no DB / no
+    Streamlit) so both the cached view path and ``compute_ranking`` reuse it.
     """
+    as_of = as_of or calendar.last()
+    if as_of is None:
+        return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None,
+                "n_universe": 0}
+    member = mdata.Universe.load().as_of(as_of)
+    candidates = [mdata.to_yahoo(s) for s in member["symbols"]] or price_book.symbols()
+    ranked, excluded = score_universe(price_book, calendar, candidates, as_of, cfg)
+    return {"as_of": as_of, "ranked": ranked, "excluded": excluded,
+            "snapshot_date": member["snapshot_date"], "n_universe": len(candidates)}
+
+
+def compute_ranking(db, as_of=None, persist=True):
+    """Rank from the cached prices and (optionally) persist the snapshot to the DB."""
     cfg = get_config(db)
     series = mdata.load_series()
     if not series:
         return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None,
                 "n_universe": 0, "error": "No cached price data found."}
+    result = rank_universe(mdata.PriceBook(series), mdata.Calendar.from_series(series), cfg, as_of)
+    if persist and result["ranked"]:
+        _persist_ranking(db, result["as_of"], result["ranked"])
+    return result
 
-    price_book = mdata.PriceBook(series)
-    calendar = mdata.Calendar.from_series(series)
-    as_of = as_of or calendar.last()
 
-    universe = mdata.Universe.load()
-    member = universe.as_of(as_of)
-    candidates = [mdata.to_yahoo(s) for s in member["symbols"]] or list(series.keys())
-
-    ranked, excluded = score_universe(price_book, calendar, candidates, as_of, cfg)
-
-    if persist:
-        db.query(MomentumRanking).filter(MomentumRanking.as_of == as_of).delete()
-        for row in ranked:
-            db.add(MomentumRanking(
-                as_of=as_of, symbol=row["symbol"], rank=row["rank"],
-                score=row["value"], blended=row["blended"],
-                r3m=row.get("r3m"), r6m=row.get("r6m"), r9m=row.get("r9m"),
-                vol=row.get("vol"),
-            ))
-        db.commit()
-
-    return {"as_of": as_of, "ranked": ranked, "excluded": excluded,
-            "snapshot_date": member["snapshot_date"], "n_universe": len(candidates)}
+def _persist_ranking(db, as_of, ranked):
+    db.query(MomentumRanking).filter(MomentumRanking.as_of == as_of).delete()
+    for row in ranked:
+        db.add(MomentumRanking(
+            as_of=as_of, symbol=row["symbol"], rank=row["rank"],
+            score=row["value"], blended=row["blended"],
+            r3m=row.get("r3m"), r6m=row.get("r6m"), r9m=row.get("r9m"), vol=row.get("vol"),
+        ))
+    db.commit()
 
 
 # ---------------------------------------------------------------------------

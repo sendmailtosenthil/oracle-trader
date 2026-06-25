@@ -46,18 +46,9 @@ def price_book():
 @st.cache_data(show_spinner="Scoring Nifty500 momentum…")
 def _ranking(sig, constituents_date, factors_json, vol_enabled, vol_months, min_cov):
     pb, cal = _bundle(sig)
-    as_of = cal.last()
-    if as_of is None:
-        return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None, "n_universe": 0}
-    member = mdata.Universe.load().as_of(as_of)
-    candidates = [mdata.to_yahoo(s) for s in member["symbols"]]
-    if not candidates:
-        candidates = list(pb._by_date.keys())
     cfg = types.SimpleNamespace(factors_json=factors_json, vol_enabled=vol_enabled,
                                 vol_months=vol_months, min_history_coverage=min_cov)
-    ranked, excluded = strategy.score_universe(pb, cal, candidates, as_of, cfg)
-    return {"as_of": as_of, "ranked": ranked, "excluded": excluded,
-            "snapshot_date": member["snapshot_date"], "n_universe": len(candidates)}
+    return strategy.rank_universe(pb, cal, cfg)
 
 
 def get_ranking(db):

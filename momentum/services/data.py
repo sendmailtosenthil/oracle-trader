@@ -192,6 +192,9 @@ class PriceBook:
     def has(self, symbol):
         return symbol in self._by_date
 
+    def symbols(self):
+        return list(self._by_date.keys())
+
     def bar_on(self, symbol, iso):
         return self._by_date.get(symbol, {}).get(iso)
 
