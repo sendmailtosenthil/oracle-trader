@@ -244,21 +244,25 @@ def allocate(picks, capital, side="buy", round_up=False):
 
 
 # ---------------------------------------------------------------------------
-# Rebalance plan (port of deployTopN + monthlyReplace)
+# Rebalance plan
 # ---------------------------------------------------------------------------
+RESERVE_COUNT = 5  # extra ranked candidates beyond the target, for delete/substitute
+
+
 def build_plan(db, ranking, as_of, price_book=None):
     """Build a buy/sell rebalance plan from the latest ranking + current holdings.
 
-    Returns a dict with ``type`` ('deploy' first time, else 'replace' or 'hold'),
-    ``sells``, ``buys``, ``proceeds``, ``investable``, ``injection``, ``cash_left``.
-    No DB writes — purely advisory until ``execute_plan`` is called.
+    Returns ``type`` ('deploy' | 'replace' | 'hold'), the ``sells`` (replace), and
+    a candidate ``pool`` of the top ``n_target + RESERVE_COUNT`` tradable names
+    (each ``{symbol, rank, score, blended, price}``). The view selects the active
+    set (top ``n_target`` after any user deletes pull in reserves) and runs
+    ``allocate`` — no DB writes until ``execute_plan``.
     """
     cfg = get_config(db)
     if price_book is None:
         price_book = mdata.PriceBook(mdata.load_series())
     ranked = ranking["ranked"]
     rank_map = {r["symbol"]: r["rank"] for r in ranked}
-
     holdings = db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()
 
     def buy_price(sym):
@@ -269,27 +273,29 @@ def build_plan(db, ranking, as_of, price_book=None):
         sp = price_book.exec_price(sym, as_of, "sell")
         return sp["price"] if sp else None
 
-    # --- Initial deployment: no holdings yet -> deploy top-N ---
-    if not holdings:
-        picks = []
+    def build_pool(count, skip=None):
+        skip = skip or set()
+        out = []
         for row in ranked:
+            if row["symbol"] in skip:
+                continue
             p = buy_price(row["symbol"])
             if not p:
                 continue
-            picks.append({**row, "price": p})
-            if len(picks) >= cfg.num_stocks:
+            out.append({"symbol": row["symbol"], "rank": row["rank"], "score": row["value"],
+                        "blended": row["blended"], "price": p})
+            if len(out) >= count:
                 break
-        res = allocate(picks, cfg.investment, side="buy")
-        buys = [{"symbol": a["symbol"], "rank": a.get("rank"), "shares": a["shares"],
-                 "price": a["price"], "cost": a["cost"],
-                 "charges": zerodha_charges(a["price"], a["shares"], "buy")}
-                for a in res["allocations"] if a["shares"] > 0 and a["price"]]
-        return {"type": "deploy", "as_of": as_of, "sells": [], "buys": buys,
-                "proceeds": 0.0, "investable": cfg.investment,
-                "per_part": cfg.investment / max(1, len(picks)),
-                "injection": res["injection"], "cash_left": res["cash_left"]}
+        return out
 
-    # --- Replacement: sell laggards, redeploy proceeds into best unheld ---
+    # --- Initial deployment: no holdings yet ---
+    if not holdings:
+        pool = build_pool(cfg.num_stocks + RESERVE_COUNT)
+        return {"type": "deploy", "as_of": as_of, "sells": [], "pool": pool,
+                "n_target": cfg.num_stocks, "capital": cfg.investment, "proceeds": 0.0,
+                "reserve": RESERVE_COUNT}
+
+    # --- Replacement: sell laggards, redeploy into best unheld ---
     threshold = cfg.replace_rank_threshold
     sells = []
     for h in holdings:
@@ -310,35 +316,46 @@ def build_plan(db, ranking, as_of, price_book=None):
                           "pnl": ((sp - h.avg_cost) * h.shares - chg) if sp else None})
 
     if not sells:
-        return {"type": "hold", "as_of": as_of, "sells": [], "buys": [],
-                "proceeds": 0.0, "investable": 0.0, "injection": 0.0, "cash_left": cfg.cash,
+        return {"type": "hold", "as_of": as_of, "sells": [], "pool": [],
+                "n_target": 0, "capital": 0.0, "proceeds": 0.0, "reserve": RESERVE_COUNT,
                 "note": "All holdings still ranked within threshold."}
 
-    # Proceeds are net of sell-side charges.
     proceeds = sum(s["price"] * s["shares"] - s["charges"] for s in sells if s["price"])
     still_held = {h.symbol for h in holdings} - {s["symbol"] for s in sells}
     needed = len(sells)
-    picks = []
-    for row in ranked:
-        if row["symbol"] in still_held:
-            continue
-        p = buy_price(row["symbol"])
-        if not p:
-            continue
-        picks.append({**row, "price": p})
-        if len(picks) >= needed:
-            break
-
+    pool = build_pool(needed + RESERVE_COUNT, skip=still_held)
     investable = cfg.cash + proceeds if cfg.reinvest_idle_cash else proceeds
-    res = allocate(picks, investable, side="buy", round_up=True)
+    return {"type": "replace", "as_of": as_of, "sells": sells, "pool": pool,
+            "n_target": needed, "capital": investable, "proceeds": proceeds,
+            "reserve": RESERVE_COUNT}
+
+
+def allocate_active(pool, excluded, n_target, capital, price_overrides=None, round_up=False):
+    """Pick the active set from ``pool`` (top ``n_target`` skipping ``excluded``,
+    pulling in reserves) and allocate ``capital`` across it.
+
+    Returns ``{active, reserves, buys, injection, cash_left, charges, per_part}``.
+    ``buys`` are the allocated active names (shares > 0). ``price_overrides`` maps
+    symbol -> user-edited price.
+    """
+    excluded = set(excluded or set())
+    price_overrides = price_overrides or {}
+    active, reserves = [], []
+    for p in pool:
+        if p["symbol"] in excluded:
+            continue
+        (active if len(active) < n_target else reserves).append(p)
+
+    picks = [{"symbol": p["symbol"], "rank": p["rank"], "score": p.get("score"),
+              "price": price_overrides.get(p["symbol"], p["price"])} for p in active]
+    res = allocate(picks, capital, side="buy", round_up=round_up)
     buys = [{"symbol": a["symbol"], "rank": a.get("rank"), "shares": a["shares"],
              "price": a["price"], "cost": a["cost"],
              "charges": zerodha_charges(a["price"], a["shares"], "buy")}
             for a in res["allocations"] if a["shares"] > 0 and a["price"]]
-    return {"type": "replace", "as_of": as_of, "sells": sells, "buys": buys,
-            "proceeds": proceeds, "investable": investable,
-            "per_part": investable / max(1, len(picks)),
-            "injection": res["injection"], "cash_left": res["cash_left"]}
+    return {"active": active, "reserves": reserves, "buys": buys,
+            "injection": res["injection"], "cash_left": res["cash_left"],
+            "charges": res["charges"], "per_part": capital / max(1, n_target)}
 
 
 def execute_plan(db, plan):

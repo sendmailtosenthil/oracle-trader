@@ -50,18 +50,19 @@ def _render_plan(db, cfg):
         st.success(plan.get("note", "Nothing to do — all holdings within threshold."))
         return
 
-    if plan.get("per_part"):
-        if plan["type"] == "deploy":
-            basis = (f"₹{plan['investable']:,.0f} capital ÷ {len(plan['buys'])} stocks "
-                     "(both editable in the **Settings** tab)")
-        else:
-            basis = (f"pot ₹{plan['investable']:,.0f} (sell proceeds + idle cash) ÷ "
-                     f"{len(plan['buys'])} replacement(s)")
-        st.caption(f"🎯 Target capital per stock: **₹{plan['per_part']:,.0f}** — {basis}. "
-                   "(Replace sizing is dynamic: a smaller pot ⇒ smaller per-stock allocation.)")
+    pool = plan["pool"]
+    n_target = plan["n_target"]
+    capital = plan["capital"]
+    reserve = plan.get("reserve", 5)
+    per_part = capital / max(1, n_target)
+    max_del = min(reserve, n_target)
 
-    st.info("✏️ You can **edit Shares and Price** below before executing (e.g. to match "
-            "your actual fills). Cost, charges, injection and cash recompute from your edits.")
+    if plan["type"] == "deploy":
+        basis = f"₹{capital:,.0f} capital ÷ {n_target} stocks (both editable in **Settings**)"
+    else:
+        basis = (f"pot ₹{capital:,.0f} (sell proceeds + idle cash) ÷ {n_target} replacement(s) "
+                 "— dynamic: smaller pot ⇒ smaller per-stock allocation")
+    st.caption(f"🎯 Target capital per stock: **₹{per_part:,.0f}** — {basis}.")
 
     # --- Sells (editable Shares / Price) ---
     edited_sells = []
@@ -93,59 +94,82 @@ def _render_plan(db, cfg):
                 "avg_cost": avg, "charges": chg, "pnl": (price - avg) * shares - chg,
             })
 
-    # --- Buys (editable Shares / Price) ---
-    edited_buys = []
-    if plan["buys"]:
-        st.subheader(f"Buy ({len(plan['buys'])})")
-        rank_by = {b["symbol"]: b.get("rank") for b in plan["buys"]}
-        per_part = plan.get("per_part", 0.0)
-        bdf = pd.DataFrame([{
-            "Symbol": b["symbol"], "Rank": b["rank"], "Shares": int(b["shares"]),
-            "Price": round(b["price"], 2),
-        } for b in plan["buys"]])
-        eb = st.data_editor(
-            bdf, hide_index=True, use_container_width=True, num_rows="fixed",
-            disabled=["Symbol", "Rank"], key="mom_buy_editor",
-            column_config={
-                "Shares": st.column_config.NumberColumn(min_value=0, step=1),
-                "Price": st.column_config.NumberColumn(min_value=0.0, step=0.05, format="%.2f"),
-            },
-        )
-        for _, r in eb.iterrows():
-            shares, price = int(r["Shares"] or 0), float(r["Price"] or 0)
-            if shares <= 0 or price <= 0:
-                continue
-            chg = strategy.zerodha_charges(price, shares, "buy")
-            edited_buys.append({
-                "symbol": r["Symbol"], "rank": rank_by.get(r["Symbol"]), "shares": shares,
-                "price": price, "cost": shares * price, "charges": chg,
-            })
+    # --- Buy selection: top n_target active + reserves; Delete to substitute ---
+    st.subheader(f"Buy — top {n_target} active, {max(0, len(pool) - n_target)} reserve")
+    st.info(f"Tick **Delete** to skip a stock (e.g. priced far above the "
+            f"₹{per_part:,.0f} target); the next reserve (rank {n_target + 1}+) takes its "
+            f"place. Up to **{max_del}** deletes. Edit **Price** to match your fills.")
 
-        # Live cost-vs-deployable view (recomputed from edits): cost in RED when it
-        # exceeds the deployable target, DARK GREEN when under.
-        if edited_buys:
-            cdf = pd.DataFrame([{
-                "Symbol": b["symbol"], "Shares": b["shares"], "Price": round(b["price"], 2),
-                "Cost": round(b["cost"], 0), "Deployable": round(per_part, 0),
-                "Gap": round(per_part - b["cost"], 0),
-            } for b in edited_buys])
+    sig = f"{plan['type']}:{plan['as_of']}:{n_target}:{len(pool)}"
+    seldf = pd.DataFrame([{
+        "Rank": p["rank"], "Symbol": p["symbol"], "Score": round(p["score"], 2),
+        "Price": round(p["price"], 2), "Delete": False,
+    } for p in pool])
+    sed = st.data_editor(
+        seldf, hide_index=True, use_container_width=True, num_rows="fixed",
+        disabled=["Rank", "Symbol", "Score"], key=f"mom_pool_{sig}",
+        column_config={
+            "Score": st.column_config.NumberColumn(format="%.2f",
+                     help="Risk-adjusted momentum score (blended return ÷ volatility)."),
+            "Price": st.column_config.NumberColumn(min_value=0.0, step=0.05, format="%.2f"),
+            "Delete": st.column_config.CheckboxColumn(
+                      help="Skip this stock and pull in the next reserve."),
+        },
+    )
+    excluded = [r["Symbol"] for _, r in sed.iterrows() if r["Delete"]]
+    price_ovr = {r["Symbol"]: float(r["Price"] or 0) for _, r in sed.iterrows()}
+    if len(excluded) > max_del:
+        order = {p["symbol"]: i for i, p in enumerate(pool)}
+        excluded = sorted(excluded, key=lambda s: order.get(s, 1e9))[:max_del]
+        st.error(f"At most {max_del} deletes allowed — honoring the first {max_del} by rank; "
+                 "untick the extras.")
 
-            def _hl(row):
-                styles = [""] * len(row)
-                i = cdf.columns.get_loc("Cost")
-                if row["Cost"] > row["Deployable"]:
-                    styles[i] = "color: #c0392b; font-weight: 700"   # red — over target
-                elif row["Cost"] < row["Deployable"]:
-                    styles[i] = "color: #1b5e20; font-weight: 700"   # dark green — under
-                return styles
+    res = strategy.allocate_active(pool, excluded, n_target, capital,
+                                   price_overrides=price_ovr,
+                                   round_up=(plan["type"] == "replace"))
+    edited_buys = res["buys"]
+    active_syms = {p["symbol"] for p in res["active"]}
+    excluded_set = set(excluded)
+    cost_by = {b["symbol"]: b["cost"] for b in edited_buys}
+    shares_by = {b["symbol"]: b["shares"] for b in edited_buys}
 
-            styled = (cdf.style.apply(_hl, axis=1)
-                      .format({"Price": "₹{:,.2f}", "Cost": "₹{:,.0f}",
-                               "Deployable": "₹{:,.0f}", "Gap": "₹{:,.0f}"}))
-            st.caption("Deployed cost vs target per stock — 🔴 over deployable · 🟢 under:")
-            st.dataframe(styled, use_container_width=True, hide_index=True)
+    # Allocation result over the whole pool: active (cost coloured), reserves
+    # (grey, unused), deleted (struck through).
+    rows = []
+    for p in pool:
+        sym = p["symbol"]
+        status = ("Deleted" if sym in excluded_set
+                  else "Active" if sym in active_syms else "Reserve")
+        cost = cost_by.get(sym, 0.0)
+        rows.append({
+            "Rank": p["rank"], "Symbol": sym, "Score": round(p["score"], 2),
+            "Price": round(price_ovr.get(sym, p["price"]), 2), "Shares": shares_by.get(sym, 0),
+            "Cost": round(cost, 0), "Deployable": round(per_part, 0),
+            "Gap": round(per_part - cost, 0) if status == "Active" else 0,
+            "Status": status,
+        })
+    rdf = pd.DataFrame(rows)
 
-    # --- Recompute the summary from the (possibly edited) rows ---
+    def _style(row):
+        if row["Status"] == "Deleted":
+            return ["text-decoration: line-through; color: #9e9e9e"] * len(row)
+        if row["Status"] == "Reserve":
+            return ["color: #9e9e9e"] * len(row)
+        styles = [""] * len(row)
+        i = rdf.columns.get_loc("Cost")
+        if row["Cost"] > row["Deployable"]:
+            styles[i] = "color: #c0392b; font-weight: 700"
+        elif 0 < row["Cost"] < row["Deployable"]:
+            styles[i] = "color: #1b5e20; font-weight: 700"
+        return styles
+
+    styled = (rdf.style.apply(_style, axis=1)
+              .format({"Score": "{:.2f}", "Price": "₹{:,.2f}", "Cost": "₹{:,.0f}",
+                       "Deployable": "₹{:,.0f}", "Gap": "₹{:,.0f}"}))
+    st.caption("🟢 under target · 🔴 over target · grey = reserve (unused) · ~~struck~~ = deleted.")
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # --- Recompute the summary from the active buys + edited sells ---
     sell_net = sum(s["price"] * s["shares"] - s["charges"] for s in edited_sells)
     buy_cost = sum(b["cost"] for b in edited_buys)
     all_charges = sum(b["charges"] for b in edited_buys) + sum(s["charges"] for s in edited_sells)
