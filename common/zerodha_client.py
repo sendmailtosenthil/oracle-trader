@@ -8,8 +8,8 @@ rate-limiting logic live in exactly one place.
 
 No Streamlit / no DB dependencies here on purpose: pure, reusable logic.
 """
+import codecs
 import csv
-import io
 import time
 
 import requests
@@ -22,11 +22,9 @@ INDIA_VIX_TOKEN = 264969        # "INDIA VIX"
 _KITE_HOST = "https://kite.zerodha.com"
 _INSTRUMENTS_URL = "https://api.kite.trade/instruments"
 
-# Instruments dump CSV column order (from api.kite.trade/instruments)
-_INSTRUMENT_COLUMNS = [
-    "instrument_token", "exchange_token", "tradingsymbol", "name", "last_price",
-    "expiry", "strike", "tick_size", "lot_size", "instrument_type", "segment", "exchange",
-]
+# Instruments dump CSV column order (api.kite.trade/instruments), 0-indexed:
+# 0 instrument_token, 1 exchange_token, 2 tradingsymbol, 3 name, 4 last_price,
+# 5 expiry, 6 strike, 7 tick_size, 8 lot_size, 9 instrument_type, 10 segment, 11 exchange
 
 
 class FatalAuthError(Exception):
@@ -134,7 +132,6 @@ class ZerodhaClient:
         entries) — never materialises the full ~100k-row master. Used by the
         momentum price refresh on memory-constrained hosts.
         """
-        import codecs
         resp = self._session.get(_INSTRUMENTS_URL, timeout=timeout, stream=True)
         resp.raise_for_status()
         reader = csv.reader(codecs.iterdecode(resp.iter_lines(), "utf-8"))
@@ -155,30 +152,48 @@ class ZerodhaClient:
                     continue
         return out
 
-    def load_instruments(self):
-        """Download and index the full instruments master. Returns the list."""
-        resp = self._session.get(_INSTRUMENTS_URL, timeout=60)
+    def load_instruments(self, keep_names=None, timeout=60):
+        """Stream the instruments master and index it, keeping only what's needed.
+
+        ``keep_names`` (e.g. ``{"NIFTY", "BANKNIFTY"}``) retains only those
+        underlyings — turning the ~100k-row master into a few thousand rows,
+        which keeps memory low on constrained hosts. Default ``None`` keeps
+        everything. Parsed as a stream so the full CSV is never held in memory,
+        and each kept row is a compact dict (only the fields downstream needs).
+        """
+        keep = set(keep_names) if keep_names else None
+        resp = self._session.get(_INSTRUMENTS_URL, timeout=timeout, stream=True)
         resp.raise_for_status()
-        reader = csv.DictReader(io.StringIO(resp.text))
+        reader = csv.reader(codecs.iterdecode(resp.iter_lines(), "utf-8"))
+        try:
+            next(reader)  # skip header
+        except StopIteration:
+            self.instruments = []
+            self._by_name = {}
+            return []
+
         instruments = []
         by_name = {}
         for row in reader:
+            if len(row) < 12:
+                continue
+            name = row[3]
+            if keep is not None and name not in keep:
+                continue
             try:
-                token = int(row["instrument_token"])
-            except (KeyError, ValueError, TypeError):
+                token = int(row[0])
+            except ValueError:
                 continue
             item = {
                 "instrument_token": token,
-                "tradingsymbol": row.get("tradingsymbol", ""),
-                "name": row.get("name", ""),
-                "expiry": row.get("expiry", "") or "",
-                "strike": _safe_float(row.get("strike")),
-                "instrument_type": row.get("instrument_type", ""),
-                "segment": row.get("segment", ""),
-                "exchange": row.get("exchange", ""),
+                "tradingsymbol": row[2],
+                "name": name,
+                "expiry": row[5] or "",
+                "strike": _safe_float(row[6]),
+                "instrument_type": row[9],
+                "segment": row[10],
             }
             instruments.append(item)
-            name = item["name"]
             if name:
                 by_name.setdefault(name, []).append(item)
         self.instruments = instruments

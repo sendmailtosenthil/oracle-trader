@@ -152,7 +152,9 @@ def run_download(
         client = ZerodhaClient(enctoken, user_id=user_id, pace_seconds=0.0)
         if not client.validate():
             raise FatalAuthError("Invalid or expired enctoken.")
-        client.load_instruments()
+        # Only load the underlyings we're about to download — keeps the
+        # in-memory instrument set to a few thousand rows instead of ~100k.
+        client.load_instruments(keep_names={t["symbol"] for t in tasks})
         vix_token = client.vix_token()
 
         os.makedirs(DATA_ROOT, exist_ok=True)
