@@ -98,16 +98,20 @@ def _render_plan(db, cfg):
     if plan["buys"]:
         st.subheader(f"Buy ({len(plan['buys'])})")
         rank_by = {b["symbol"]: b.get("rank") for b in plan["buys"]}
+        per_part = plan.get("per_part", 0.0)
         bdf = pd.DataFrame([{
             "Symbol": b["symbol"], "Rank": b["rank"], "Shares": int(b["shares"]),
-            "Price": round(b["price"], 2),
+            "Price": round(b["price"], 2), "Deployable/stock": round(per_part, 0),
         } for b in plan["buys"]])
         eb = st.data_editor(
             bdf, hide_index=True, use_container_width=True, num_rows="fixed",
-            disabled=["Symbol", "Rank"], key="mom_buy_editor",
+            disabled=["Symbol", "Rank", "Deployable/stock"], key="mom_buy_editor",
             column_config={
                 "Shares": st.column_config.NumberColumn(min_value=0, step=1),
                 "Price": st.column_config.NumberColumn(min_value=0.0, step=0.05, format="%.2f"),
+                "Deployable/stock": st.column_config.NumberColumn(
+                    format="₹%d", help="Capital deployable per stock — capital ÷ stocks for "
+                                       "deploy, pot ÷ replacements for replace."),
             },
         )
         for _, r in eb.iterrows():
