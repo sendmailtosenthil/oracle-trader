@@ -38,7 +38,12 @@ def _render_plan(db, cfg):
         H.render_no_ranking(ranking)
         return
 
-    pb = H.price_book()
+    # Small price book: the top-ranked candidates (enough to fill the pool with a
+    # buffer) plus current holdings — never the full universe.
+    from common.database import MomentumHolding
+    held_syms = [h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()]
+    top_syms = [r["symbol"] for r in ranking["ranked"][:60]]
+    pb = H.price_book(set(top_syms) | set(held_syms))
     plan = strategy.build_plan(db, ranking, ranking["as_of"], price_book=pb)
 
     st.write(f"Plan as of **{plan['as_of']}** — type: **{plan['type'].upper()}**")
@@ -198,14 +203,15 @@ def _render_plan(db, cfg):
         eplan = {"type": plan["type"], "as_of": plan["as_of"],
                  "sells": edited_sells, "buys": edited_buys, "injection": injection}
         strategy.execute_plan(db, eplan)
-        H.clear_caches()
+        # Holdings changed (not the universe ranking) — next load reads fresh from DB.
         st.success(f"Done — {len(edited_buys)} buy(s), {len(edited_sells)} sell(s) recorded.")
         st.rerun()
 
 
 # --------------------------------------------------------------------------
-def _do_refresh(broker, fetch_syms, from_date, prune_to=None):
-    """Run a price refresh from ``from_date`` → today, persist the summary, rerun.
+def _do_refresh(db, broker, fetch_syms, from_date, prune_to=None):
+    """Run a price refresh from ``from_date`` → today, recompute + persist the
+    ranking to the DB, store the summary, and rerun.
 
     ``prune_to`` (a symbol set) trims the cache to exactly that set after fetching;
     pass it for a full build (drop stale leftovers). Leave it None for a light
@@ -223,9 +229,11 @@ def _do_refresh(broker, fetch_syms, from_date, prune_to=None):
             enctoken=broker.enctoken, user_id=broker.user_id,
             symbols=fetch_syms, history_from=from_date, progress_cb=cb,
         )
-    if not result["fatal"] and prune_to is not None:
-        result["pruned"] = mdata.prune_cache(prune_to)
-    H.clear_caches()
+    if not result["fatal"]:
+        if prune_to is not None:
+            result["pruned"] = mdata.prune_cache(prune_to)
+        with st.spinner("Re-ranking…"):
+            strategy.compute_ranking(db)   # streams prices, persists ranking to DB
     st.session_state["mom_refresh_result"] = result
     st.rerun()
 
@@ -324,13 +332,13 @@ def _render_refresh(db, cfg):
                        "close. After **3:30 PM IST** this becomes a full 500 refresh.")
             if st.button("🔄 Refresh now (top names + holdings)", type="primary"):
                 # No prune — the other ~450 names keep their history for re-ranking.
-                _do_refresh(broker, light_syms, from_date)
+                _do_refresh(db, broker, light_syms, from_date)
         else:
             st.caption(f"**Market closed** — fetches the **full {len(full_syms)}** "
                        "(current Nifty 500 + holdings) on settled closes, re-ranks, and "
                        "prunes stale names. Use this for the accurate end-of-day ranking.")
             if st.button("🔄 Refresh now (full 500 — settled closes)", type="primary"):
-                _do_refresh(broker, full_syms, from_date, prune_to=set(full_syms))
+                _do_refresh(db, broker, full_syms, from_date, prune_to=set(full_syms))
     else:
         st.warning("⚠️ Ranking can't be computed yet — the current Nifty 500 names "
                    "lack the ~1-year of daily history the lookback needs.")
@@ -351,7 +359,7 @@ def _render_refresh(db, cfg):
             help="Start date for the historical daily candles (end is always today).",
         )
         if st.button("⬇️ Fetch full history from Zerodha"):
-            _do_refresh(broker, full_syms, history_from, prune_to=set(full_syms))
+            _do_refresh(db, broker, full_syms, history_from, prune_to=set(full_syms))
 
 
 # --------------------------------------------------------------------------
@@ -397,6 +405,9 @@ def _render_config(db, cfg):
         cfg.factors_json = json.dumps(facs)
         strategy.recalc_cash(db, cfg)  # investment change affects cash identity
         db.commit()
-        H.clear_caches()
+        # Scoring params changed — recompute + persist the ranking to the DB.
+        if mdata.cache_meta()[0] > 0:
+            with st.spinner("Re-ranking…"):
+                strategy.compute_ranking(db)
         st.success("Settings saved.")
         st.rerun()

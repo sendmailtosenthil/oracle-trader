@@ -2,7 +2,7 @@
 import streamlit as st
 
 from common.database import BrokerConfig
-from common.broker import is_zerodha_token_valid
+from common.broker import is_zerodha_token_valid, clear_token_cache
 
 
 def render(db):
@@ -33,6 +33,6 @@ def render(db):
                     db.add(new_config)
 
                 db.commit()
-                is_zerodha_token_valid.clear()
+                clear_token_cache()
                 st.success("Zerodha credentials saved successfully!")
                 st.rerun()

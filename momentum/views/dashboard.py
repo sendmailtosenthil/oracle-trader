@@ -20,7 +20,11 @@ def render(db):
                                                     "snapshot_date": None, "n_universe": 0}
     rmap = H.rank_map(ranking)
     rrmap = H.raw_rank_map(ranking)
-    pb = H.price_book() if has_prices else None
+    # Value holdings with a small price book built from just the held symbols.
+    from common.database import MomentumHolding
+    held_syms = [h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()]
+    # Small price book (held symbols only); empty when none — never the full universe.
+    pb = H.price_book(held_syms)
     pv = strategy.portfolio_value(db, rank_map=rmap, raw_rank_map=rrmap, price_book=pb)
 
     if not has_prices:

@@ -154,9 +154,8 @@ def _render_options_chain(db):
         st.dataframe(view, use_container_width=True)
 
 
-@st.cache_data(show_spinner=False)
 def _load_options(path, _mtime):
-    """Load the columns we need; cache keyed by path + mtime."""
+    """Load the columns we need (read from disk each call — nothing held in RAM)."""
     return pd.read_csv(
         path,
         usecols=["expiry", "strike", "type", "timestamp", "close", "oi"],

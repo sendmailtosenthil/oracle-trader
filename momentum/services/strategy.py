@@ -160,11 +160,33 @@ def _persist_ranking(db, as_of, ranked):
     db.query(MomentumRanking).filter(MomentumRanking.as_of == as_of).delete()
     for row in ranked:
         db.add(MomentumRanking(
-            as_of=as_of, symbol=row["symbol"], rank=row["rank"],
+            as_of=as_of, symbol=row["symbol"], rank=row["rank"], raw_rank=row.get("raw_rank"),
             score=row["value"], blended=row["blended"],
             r3m=row.get("r3m"), r6m=row.get("r6m"), r9m=row.get("r9m"), vol=row.get("vol"),
         ))
     db.commit()
+
+
+def read_ranking(db):
+    """Read the latest persisted ranking from the DB (no prices in RAM).
+
+    Returns the same shape as ``rank_universe`` (``ranked`` rows carry
+    ``value``/``blended``/``raw_rank``/factor returns), with ``snapshot_date`` and
+    ``n_universe`` resolved cheaply from the constituents file.
+    """
+    from sqlalchemy import func
+    latest = db.query(func.max(MomentumRanking.as_of)).scalar()
+    if not latest:
+        return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None, "n_universe": 0}
+    rows = (db.query(MomentumRanking)
+            .filter(MomentumRanking.as_of == latest)
+            .order_by(MomentumRanking.rank.asc()).all())
+    ranked = [{"symbol": r.symbol, "rank": r.rank, "raw_rank": r.raw_rank, "value": r.score,
+               "blended": r.blended, "r3m": r.r3m, "r6m": r.r6m, "r9m": r.r9m, "vol": r.vol}
+              for r in rows]
+    member = mdata.Universe.load().as_of(latest)
+    return {"as_of": latest, "ranked": ranked, "excluded": [],
+            "snapshot_date": member["snapshot_date"], "n_universe": len(member["symbols"])}
 
 
 # ---------------------------------------------------------------------------

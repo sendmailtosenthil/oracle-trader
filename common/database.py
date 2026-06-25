@@ -130,7 +130,8 @@ class MomentumRanking(Base):
     id = Column(Integer, primary_key=True)
     as_of = Column(String, nullable=False)                 # ISO ranking date
     symbol = Column(String, nullable=False)
-    rank = Column(Integer, nullable=False)
+    rank = Column(Integer, nullable=False)                 # vol-adjusted rank
+    raw_rank = Column(Integer, nullable=True)              # raw-momentum rank
     score = Column(Float, default=0.0)                     # final (vol-adjusted) score
     blended = Column(Float, default=0.0)                   # blended factor return
     r3m = Column(Float, nullable=True)
@@ -168,8 +169,24 @@ def init_db(db_path='sqlite:///oracle.db'):
     global engine, SessionLocal
     engine = create_engine(db_path, connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     seed_data()
+
+def _ensure_columns():
+    """Add columns introduced after a table was first created (SQLite create_all
+    won't alter existing tables). Idempotent and additive."""
+    from sqlalchemy import text
+    wanted = {
+        'momentum_trades': [('charges', 'FLOAT DEFAULT 0.0')],
+        'momentum_rankings': [('raw_rank', 'INTEGER')],
+    }
+    with engine.begin() as conn:
+        for table, cols in wanted.items():
+            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            for name, decl in cols:
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {decl}"))
 
 def get_db():
     global SessionLocal
