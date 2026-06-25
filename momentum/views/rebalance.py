@@ -35,7 +35,7 @@ def _render_plan(db, cfg):
 
     ranking = H.get_ranking(db)
     if not ranking["ranked"]:
-        st.warning("No ranked stocks for the latest date.")
+        H.render_no_ranking(ranking)
         return
 
     pb = H.price_book()
@@ -161,7 +161,6 @@ def _render_refresh(db, cfg):
 
     today = datetime.date.today()
     full_start = today - datetime.timedelta(days=455)
-    lookback_ok = bool(earliest_bar) and earliest_bar <= (today - datetime.timedelta(days=300)).isoformat()
 
     # Fetch the CURRENT index membership plus any held stocks (so holdings that
     # have left the index still get priced). ~500 names in practice.
@@ -170,22 +169,33 @@ def _render_refresh(db, cfg):
     held = {h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()}
     fetch_syms = sorted(current | held)
 
+    # Decide readiness from whether ranking ACTUALLY produces results — the
+    # current universe must have enough history, not just *some* cached symbol.
+    # (earliest_bar above is the oldest across all 634 cached names, which can be
+    # old leftovers, so it's a misleading readiness signal.)
+    ranking = H.get_ranking(db)
+    has_ranking = bool(ranking["ranked"])
+
     st.divider()
     # --- PRIMARY: daily latest-price refresh (no date to pick) ---
     st.subheader("🔄 Refresh latest prices")
-    if lookback_ok:
+    if has_ranking:
         st.caption(f"Fetches today's close for all {len(fetch_syms)} stocks "
                    f"(tops up from the last bar **{latest_bar}** → today) and re-ranks. "
                    "This is the daily action — no historical re-download.")
         if st.button("🔄 Refresh now (latest prices)", type="primary"):
             _do_refresh(broker, fetch_syms, datetime.date.fromisoformat(latest_bar))
     else:
-        st.warning(f"⚠️ Cached history is too short (earliest bar: {earliest_bar or 'none'}) "
-                   "for the ~9-month momentum lookback. Build the history once below "
-                   "before the daily refresh and ranking will be meaningful.")
+        st.warning("⚠️ Ranking can't be computed yet — the current Nifty 500 names "
+                   "lack the ~1-year of daily history the lookback needs.")
+        summary = H.exclusion_summary(ranking)
+        if summary:
+            st.caption(f"Universe of {ranking.get('n_universe', 0)} excluded — {summary}.")
+        st.caption("Build the history once below (fetch from ~15 months back), then "
+                   "the daily **Refresh now** will appear here.")
 
     # --- SECONDARY: one-time history build / repair (with date picker) ---
-    with st.expander("⚙️ Build / repair price history (one-time)", expanded=not lookback_ok):
+    with st.expander("⚙️ Build / repair price history (one-time)", expanded=not has_ranking):
         st.caption("Loads ~15 months of daily candles so the 3/6/9-month lookback "
                    "exists. Needed only for first setup or to repair gaps — not for "
                    "daily use. New bars merge in; existing history is kept.")

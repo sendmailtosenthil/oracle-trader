@@ -89,6 +89,9 @@ def render(db):
 
     # --- Top momentum ranking (both orderings side by side) ---
     if not ranking["ranked"]:
+        if has_prices:
+            st.divider()
+            H.render_no_ranking(ranking)
         return
     st.divider()
     st.subheader("Momentum ranking — risk-adjusted vs raw")

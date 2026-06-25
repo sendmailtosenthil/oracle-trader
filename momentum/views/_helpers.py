@@ -12,6 +12,7 @@ rewrites files, bumping the max mtime) or the config changes.
 """
 import os
 import types
+from collections import Counter
 
 import streamlit as st
 
@@ -67,6 +68,15 @@ def raw_rank_map(ranking):
     return {r["symbol"]: r.get("raw_rank") for r in ranking["ranked"]}
 
 
+def exclusion_summary(ranking, top=4):
+    """Short 'why nothing ranked' breakdown, e.g. '498 insufficient-history, 2 no-price-data'."""
+    exc = ranking.get("excluded") or []
+    if not exc:
+        return ""
+    counts = Counter(e["reason"] for e in exc)
+    return ", ".join(f"{n} {reason}" for reason, n in counts.most_common(top))
+
+
 @st.cache_data(show_spinner="Checking Nifty 500 constituents…")
 def _ensure_constituents(reconstitution_iso):
     # Keyed on the current reconstitution date so it runs once per period per
@@ -78,6 +88,19 @@ def auto_refresh_constituents():
     """Self-heal the universe file on load. Returns the ensure-result dict.
     Cheap in the normal case (no network unless the file is missing/stale)."""
     return _ensure_constituents(mdata.latest_reconstitution().isoformat())
+
+
+def render_no_ranking(ranking):
+    """Explain why nothing ranked and point to the fix (usually: build history)."""
+    st.warning("No ranked stocks for the latest date.")
+    summary = exclusion_summary(ranking)
+    if summary:
+        st.caption(f"Universe of {ranking.get('n_universe', 0)} excluded — {summary}.")
+    st.info("If most are **insufficient-history**, the current Nifty 500 names don't yet "
+            "have the ~1-year of daily prices the 3/6/9-month lookback needs. Go to "
+            "**Refresh prices → Build / repair price history (one-time)** and fetch from "
+            "~15 months back. (The 'History from' metric reflects the *oldest* cached "
+            "symbol, not every current name — so it can look complete when it isn't.)")
 
 
 def clear_caches():
