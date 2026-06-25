@@ -184,9 +184,10 @@ def allocate(picks, capital, side="buy", round_up=False):
        (largest gap ≈ highest priced). A stock that reaches/exceeds ``per_part``
        stops receiving more — so redistribution can push a stock past the part by
        at most one unit, never further.
-    3. ``round_up`` (replace): if usable leftover remains, buy ONE more unit of the
-       priciest stock it covers more than half of (``leftover > price/2``), topping
-       up the small shortfall as injection — i.e. round to the nearest whole unit.
+    3. ``round_up`` (replace): if usable leftover covers more than half a unit of
+       some stock (``leftover > price/2``), buy ONE more unit — choosing the stock
+       that needs the LEAST extra from pocket (smallest ``price − leftover`` shortfall,
+       i.e. the cheapest qualifying stock) — and top up the shortfall as injection.
     4. Leftover that can't buy another eligible unit becomes cash.
 
     Charges are accounted, so the leftover is post-charge. Returns
@@ -225,11 +226,13 @@ def allocate(picks, capital, side="buy", round_up=False):
         leftover = capital - total_cost() - total_charges()
 
     # Round-up: leftover can't fully fund a unit, but if it covers >half a unit of
-    # some stock, buy that unit (inject the small shortfall) — round to nearest.
+    # some stock, buy that one unit (inject the small shortfall) — round to nearest.
+    # Pick the stock needing the LEAST extra from pocket = the cheapest qualifying
+    # one (smallest price ⇒ smallest price − leftover shortfall).
     if round_up and leftover > 0:
         affordable = [a for a in alloc if a["cost"] < per_part and a["price"] < 2 * leftover]
         if affordable:
-            target = max(affordable, key=lambda a: a["price"])  # use the most leftover
+            target = min(affordable, key=lambda a: a["price"])
             target["shares"] += 1
             target["cost"] += target["price"]
 
