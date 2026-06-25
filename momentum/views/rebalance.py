@@ -50,41 +50,97 @@ def _render_plan(db, cfg):
         st.success(plan.get("note", "Nothing to do — all holdings within threshold."))
         return
 
+    st.info("✏️ You can **edit Shares and Price** below before executing (e.g. to match "
+            "your actual fills). Cost, charges, injection and cash recompute from your edits.")
+
+    # --- Sells (editable Shares / Price) ---
+    edited_sells = []
     if plan["sells"]:
         st.subheader(f"Sell ({len(plan['sells'])})")
+        avg_by = {s["symbol"]: (s.get("avg_cost") or 0.0) for s in plan["sells"]}
+        meta_by = {s["symbol"]: s for s in plan["sells"]}
         sdf = pd.DataFrame([{
             "Symbol": s["symbol"], "Rank": s["rank"], "Reason": s["reason"],
-            "Shares": s["shares"], "Price": round(s["price"], 2) if s["price"] else None,
-            "Proceeds": round(s["price"] * s["shares"], 0) if s["price"] else None,
-            "Est. P/L": round(s["pnl"], 0) if s["pnl"] is not None else None,
+            "Shares": int(s["shares"]), "Price": round(s["price"], 2) if s["price"] else 0.0,
         } for s in plan["sells"]])
-        st.dataframe(sdf, use_container_width=True, hide_index=True)
+        es = st.data_editor(
+            sdf, hide_index=True, use_container_width=True, num_rows="fixed",
+            disabled=["Symbol", "Rank", "Reason"], key="mom_sell_editor",
+            column_config={
+                "Shares": st.column_config.NumberColumn(min_value=0, step=1),
+                "Price": st.column_config.NumberColumn(min_value=0.0, step=0.05, format="%.2f"),
+            },
+        )
+        for _, r in es.iterrows():
+            shares, price = int(r["Shares"] or 0), float(r["Price"] or 0)
+            if shares <= 0 or price <= 0:
+                continue
+            chg = strategy.zerodha_charges(price, shares, "sell")
+            avg = avg_by.get(r["Symbol"], 0.0)
+            edited_sells.append({
+                "symbol": r["Symbol"], "rank": meta_by[r["Symbol"]]["rank"],
+                "reason": meta_by[r["Symbol"]]["reason"], "shares": shares, "price": price,
+                "avg_cost": avg, "charges": chg, "pnl": (price - avg) * shares - chg,
+            })
 
+    # --- Buys (editable Shares / Price) ---
+    edited_buys = []
     if plan["buys"]:
         st.subheader(f"Buy ({len(plan['buys'])})")
+        rank_by = {b["symbol"]: b.get("rank") for b in plan["buys"]}
         bdf = pd.DataFrame([{
-            "Symbol": b["symbol"], "Rank": b["rank"], "Shares": b["shares"],
-            "Price": round(b["price"], 2), "Cost": round(b["cost"], 0),
+            "Symbol": b["symbol"], "Rank": b["rank"], "Shares": int(b["shares"]),
+            "Price": round(b["price"], 2),
         } for b in plan["buys"]])
-        st.dataframe(bdf, use_container_width=True, hide_index=True)
+        eb = st.data_editor(
+            bdf, hide_index=True, use_container_width=True, num_rows="fixed",
+            disabled=["Symbol", "Rank"], key="mom_buy_editor",
+            column_config={
+                "Shares": st.column_config.NumberColumn(min_value=0, step=1),
+                "Price": st.column_config.NumberColumn(min_value=0.0, step=0.05, format="%.2f"),
+            },
+        )
+        for _, r in eb.iterrows():
+            shares, price = int(r["Shares"] or 0), float(r["Price"] or 0)
+            if shares <= 0 or price <= 0:
+                continue
+            chg = strategy.zerodha_charges(price, shares, "buy")
+            edited_buys.append({
+                "symbol": r["Symbol"], "rank": rank_by.get(r["Symbol"]), "shares": shares,
+                "price": price, "cost": shares * price, "charges": chg,
+            })
+
+    # --- Recompute the summary from the (possibly edited) rows ---
+    sell_net = sum(s["price"] * s["shares"] - s["charges"] for s in edited_sells)
+    buy_cost = sum(b["cost"] for b in edited_buys)
+    all_charges = sum(b["charges"] for b in edited_buys) + sum(s["charges"] for s in edited_sells)
+    available = cfg.cash + sell_net
+    needed = buy_cost + sum(b["charges"] for b in edited_buys)
+    injection = max(0.0, needed - available)
+    cash_left = available + injection - needed
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Proceeds", f"₹{plan['proceeds']:,.0f}")
-    c2.metric("Investable", f"₹{plan['investable']:,.0f}",
-              help="Sell proceeds + idle cash (reinvest mode)." if cfg.reinvest_idle_cash
-              else "Sell proceeds only.")
-    c3.metric("Capital injection", f"₹{plan['injection']:,.0f}",
-              help="Extra capital needed to satisfy the min-1-share rule.")
-    c4.metric("Cash left", f"₹{plan['cash_left']:,.0f}")
+    c1.metric("Sell proceeds (net)", f"₹{sell_net:,.0f}")
+    c2.metric("Buy cost", f"₹{buy_cost:,.0f}")
+    c3.metric("Charges", f"₹{all_charges:,.2f}")
+    c4.metric("Capital injection", f"₹{injection:,.0f}",
+              help="Extra capital needed beyond cash + sell proceeds to fund the buys.")
+    st.caption(f"Cash on hand ₹{cfg.cash:,.0f} + net proceeds ₹{sell_net:,.0f} − buys "
+               f"₹{needed:,.0f} → **cash left ₹{cash_left:,.0f}** (injection ₹{injection:,.0f}).")
 
     st.divider()
-    label = ("Deploy initial portfolio" if plan["type"] == "deploy"
-             else "Execute rebalance")
-    st.warning("This records trades and updates holdings/cash. It does **not** place "
-               "live broker orders — execute those manually on Kite.")
+    label = "Deploy initial portfolio" if plan["type"] == "deploy" else "Execute rebalance"
+    st.warning("This records trades and updates holdings/cash from the values above. It does "
+               "**not** place live broker orders — execute those manually on Kite.")
     if st.button(f"✅ {label}", type="primary"):
-        strategy.execute_plan(db, plan)
-        st.success(f"Done — {len(plan['buys'])} buy(s), {len(plan['sells'])} sell(s) recorded.")
+        if not edited_buys and not edited_sells:
+            st.error("Nothing to execute — set at least one buy/sell with shares > 0.")
+            return
+        eplan = {"type": plan["type"], "as_of": plan["as_of"],
+                 "sells": edited_sells, "buys": edited_buys, "injection": injection}
+        strategy.execute_plan(db, eplan)
+        H.clear_caches()
+        st.success(f"Done — {len(edited_buys)} buy(s), {len(edited_sells)} sell(s) recorded.")
         st.rerun()
 
 

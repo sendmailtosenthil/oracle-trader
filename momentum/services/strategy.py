@@ -168,41 +168,63 @@ def _persist_ranking(db, as_of, ranked):
 
 
 # ---------------------------------------------------------------------------
-# Allocation (port of allocate.js)
+# Allocation — equal-capital, gap-based redistribution
 # ---------------------------------------------------------------------------
-def allocate(picks, price_of, capital):
-    """Bottom-up integer allocation with residual cascade and a 1-share floor.
+def allocate(picks, capital, side="buy"):
+    """Allocate ``capital`` across ``picks`` (each has ``price``) into whole units.
 
-    ``picks`` is best-first. Returns ``{allocations, total_cost, cash_left,
-    injection}``. ``injection`` is extra capital required when the min-1 rule
-    overspends.
+    Algorithm (replaces the old residual cascade that could starve a stock when a
+    neighbour was expensive):
+
+    1. Each pick targets an equal part ``per_part = capital / n``. Base units =
+       ``floor(per_part / price)`` (min 1). A stock priced above ``per_part`` gets
+       exactly 1 unit.
+    2. Whatever capital is left (from whole-unit rounding, net of charges) is
+       redistributed one unit at a time to the stock furthest BELOW ``per_part``
+       (largest gap ≈ highest priced). A stock that reaches/exceeds ``per_part``
+       stops receiving more — so redistribution can push a stock past the part by
+       at most one unit, never further.
+    3. Leftover that can't buy another eligible unit becomes cash.
+
+    Charges are accounted, so the leftover is post-charge. Returns
+    ``{allocations, total_cost, charges, cash_left, injection}`` — ``injection`` is
+    the extra capital the min-1 rule forces when a pick costs more than its part.
     """
     n = len(picks)
     if n == 0:
-        return {"allocations": [], "total_cost": 0.0, "cash_left": capital, "injection": 0.0}
+        return {"allocations": [], "total_cost": 0.0, "charges": 0.0,
+                "cash_left": capital, "injection": 0.0}
     per_part = capital / n
-    allocations = [None] * n
-    carry = 0.0
-    for i in range(n - 1, -1, -1):
-        pick = picks[i]
-        price = price_of(pick["symbol"])
-        budget = per_part + carry
-        if not price or price <= 0:
-            carry = budget
-            allocations[i] = {**pick, "price": None, "shares": 0, "cost": 0.0,
-                              "budget": budget, "residual": carry, "skipped": "no-price"}
-            continue
-        shares = int(budget // price)
-        if shares < 1:
-            shares = 1  # minimum 1 share
-        cost = shares * price
-        carry = budget - cost  # leftover cascades up (can be negative)
-        allocations[i] = {**pick, "price": price, "shares": shares, "cost": cost,
-                          "budget": budget, "residual": carry}
-    total_cost = sum(a["cost"] for a in allocations)
-    injection = max(0.0, total_cost - capital)
-    cash_left = capital + injection - total_cost
-    return {"allocations": allocations, "total_cost": total_cost,
+
+    alloc = []
+    for p in picks:
+        price = p["price"]
+        units = int(per_part // price) if price and price > 0 else 0
+        if units < 1:
+            units = 1
+        alloc.append({**p, "price": price, "shares": units, "cost": units * price})
+
+    def total_cost():
+        return sum(a["cost"] for a in alloc)
+
+    def total_charges():
+        return sum(zerodha_charges(a["price"], a["shares"], side) for a in alloc)
+
+    # Redistribute leftover to the largest-gap stocks, one unit at a time.
+    leftover = capital - total_cost() - total_charges()
+    while leftover > 0:
+        cands = [a for a in alloc if a["cost"] < per_part and a["price"] <= leftover]
+        if not cands:
+            break
+        target = max(cands, key=lambda a: per_part - a["cost"])
+        target["shares"] += 1
+        target["cost"] += target["price"]
+        leftover = capital - total_cost() - total_charges()
+
+    tc, chg = total_cost(), total_charges()
+    injection = max(0.0, tc + chg - capital)
+    cash_left = capital + injection - tc - chg
+    return {"allocations": alloc, "total_cost": tc, "charges": chg,
             "cash_left": cash_left, "injection": injection}
 
 
@@ -242,8 +264,7 @@ def build_plan(db, ranking, as_of, price_book=None):
             picks.append({**row, "price": p})
             if len(picks) >= cfg.num_stocks:
                 break
-        res = allocate(picks, lambda s: next((p["price"] for p in picks if p["symbol"] == s), None),
-                       cfg.investment)
+        res = allocate(picks, cfg.investment, side="buy")
         buys = [{"symbol": a["symbol"], "rank": a.get("rank"), "shares": a["shares"],
                  "price": a["price"], "cost": a["cost"],
                  "charges": zerodha_charges(a["price"], a["shares"], "buy")}
@@ -293,8 +314,7 @@ def build_plan(db, ranking, as_of, price_book=None):
             break
 
     investable = cfg.cash + proceeds if cfg.reinvest_idle_cash else proceeds
-    res = allocate(picks, lambda s: next((p["price"] for p in picks if p["symbol"] == s), None),
-                   investable)
+    res = allocate(picks, investable, side="buy")
     buys = [{"symbol": a["symbol"], "rank": a.get("rank"), "shares": a["shares"],
              "price": a["price"], "cost": a["cost"],
              "charges": zerodha_charges(a["price"], a["shares"], "buy")}
