@@ -146,11 +146,11 @@ def rank_universe(price_book, calendar, cfg, as_of=None):
 def compute_ranking(db, as_of=None, persist=True):
     """Rank from the cached prices and (optionally) persist the snapshot to the DB."""
     cfg = get_config(db)
-    series = mdata.load_series()
-    if not series:
+    pb = mdata.PriceBook.from_cache()
+    if not pb.symbols():
         return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None,
                 "n_universe": 0, "error": "No cached price data found."}
-    result = rank_universe(mdata.PriceBook(series), mdata.Calendar.from_series(series), cfg, as_of)
+    result = rank_universe(pb, mdata.Calendar(pb.all_dates()), cfg, as_of)
     if persist and result["ranked"]:
         _persist_ranking(db, result["as_of"], result["ranked"])
     return result
@@ -260,7 +260,7 @@ def build_plan(db, ranking, as_of, price_book=None):
     """
     cfg = get_config(db)
     if price_book is None:
-        price_book = mdata.PriceBook(mdata.load_series())
+        price_book = mdata.PriceBook.from_cache()
     ranked = ranking["ranked"]
     rank_map = {r["symbol"]: r["rank"] for r in ranked}
     holdings = db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()
@@ -444,7 +444,7 @@ def portfolio_value(db, rank_map=None, raw_rank_map=None, price_book=None):
     """
     cfg = get_config(db)
     if price_book is None:
-        price_book = mdata.PriceBook(mdata.load_series())
+        price_book = mdata.PriceBook.from_cache()
     rank_map = rank_map or {}
     raw_rank_map = raw_rank_map or {}
 

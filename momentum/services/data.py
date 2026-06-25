@@ -194,32 +194,62 @@ class Calendar:
 # PriceBook
 # ---------------------------------------------------------------------------
 class PriceBook:
-    """In-memory price accessor over many symbols (no look-ahead)."""
+    """In-memory price accessor over many symbols (no look-ahead).
 
-    def __init__(self, series, pricing=None):
-        # pricing: {'buy': 'CLOSE'|'OPEN'|'HL2'|'OH2'|'OL2', 'sell': ...}
-        # Default is CLOSE: this is a live tracker, so the price of a stock is the
-        # latest candle's close (today's running close during market hours, or a
-        # past day's settled close), consistent with how ranking scores closes.
-        self.pricing = pricing or {"buy": "CLOSE", "sell": "CLOSE"}
-        self._dates = {}    # symbol -> [iso, ...] ascending
-        self._by_date = {}  # symbol -> {iso: bar}
-        for sym, bars in series.items():
-            ordered = sorted(bars, key=lambda b: b["date"])
-            self._dates[sym] = [b["date"] for b in ordered]
-            self._by_date[sym] = {b["date"]: b for b in ordered}
+    Stores **close only** (the single field the whole module uses — ranking,
+    pricing and valuation are all close-based), so its RAM footprint is ~1/6 of
+    the full OHLCV bars. Build it for the FULL universe with ``from_cache()`` or
+    for a small subset by passing ``symbols`` — keep the subset small on a
+    low-memory host (e.g. just holdings + the rebalance pool).
+    """
+
+    def __init__(self, series=None):
+        self._dates = {}   # symbol -> [iso, ...] ascending
+        self._close = {}   # symbol -> {iso: close}
+        for sym, bars in (series or {}).items():
+            self._add(sym, bars)
+
+    def _add(self, sym, bars):
+        ordered = sorted(bars, key=lambda b: b["date"])
+        self._dates[sym] = [b["date"] for b in ordered]
+        self._close[sym] = {b["date"]: b["close"] for b in ordered}
+
+    @classmethod
+    def from_cache(cls, symbols=None):
+        """Build by streaming the JSON cache one file at a time (low peak RAM)."""
+        pb = cls()
+        if symbols is None:
+            paths = glob.glob(os.path.join(cache_dir(), "*.json"))
+        else:
+            paths = [os.path.join(cache_dir(), f"{s}.json") for s in symbols]
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path) as f:
+                    payload = json.load(f)
+            except (ValueError, OSError):
+                continue
+            sym = payload.get("symbol") or os.path.basename(path)[:-5]
+            bars = payload.get("bars") or []
+            if bars:
+                pb._add(sym, bars)
+        return pb
 
     def has(self, symbol):
-        return symbol in self._by_date
+        return symbol in self._close
 
     def symbols(self):
-        return list(self._by_date.keys())
+        return list(self._close.keys())
 
-    def bar_on(self, symbol, iso):
-        return self._by_date.get(symbol, {}).get(iso)
+    def all_dates(self):
+        """Sorted union of all trading dates seen — the calendar."""
+        s = set()
+        for ds in self._dates.values():
+            s.update(ds)
+        return sorted(s)
 
-    def as_of(self, symbol, iso):
-        """Last bar on or before ``iso``, or None."""
+    def _date_on_or_before(self, symbol, iso):
         dates = self._dates.get(symbol)
         if not dates:
             return None
@@ -230,55 +260,35 @@ class PriceBook:
                 lo = mid + 1
             else:
                 hi = mid
-        idx = lo - 1
-        if idx < 0:
-            return None
-        return self._by_date[symbol][dates[idx]]
+        return dates[lo - 1] if lo - 1 >= 0 else None
 
     def close_as_of(self, symbol, iso):
-        bar = self.as_of(symbol, iso)
-        return bar["close"] if bar else None
+        d = self._date_on_or_before(symbol, iso)
+        return self._close[symbol][d] if d else None
 
     def latest_close(self, symbol):
         dates = self._dates.get(symbol)
-        if not dates:
-            return None
-        return self._by_date[symbol][dates[-1]]["close"]
+        return self._close[symbol][dates[-1]] if dates else None
 
-    def _price_from_bar(self, bar, mode):
-        if mode == "CLOSE":
-            return bar["close"]
-        if mode == "HL2":
-            return (bar["high"] + bar["low"]) / 2
-        if mode == "OH2":
-            return (bar["open"] + bar["high"]) / 2
-        if mode == "OL2":
-            return (bar["open"] + bar["low"]) / 2
-        return bar["open"]  # OPEN (default)
+    def exec_price(self, symbol, iso, side="buy"):
+        """Execution price = close on ``iso`` (or the most recent prior close).
 
-    def exec_price(self, symbol, iso, side):
-        """Execution price for ``side`` ('buy'/'sell') using the configured proxy.
-
-        Uses the exact bar on ``iso``; falls back to the most recent prior bar.
-        Returns ``{price, date, exact}`` or None.
+        Returns ``{price, date, exact}`` or None. Pricing is always the close
+        (latest/running close intraday, settled close otherwise).
         """
-        bar = self.bar_on(symbol, iso)
-        exact = True
-        if not bar:
-            bar = self.as_of(symbol, iso)
-            exact = False
-        if not bar:
-            return None
-        mode = self.pricing["buy"] if side == "buy" else self.pricing["sell"]
-        return {"price": self._price_from_bar(bar, mode), "date": bar["date"], "exact": exact}
+        byd = self._close.get(symbol, {})
+        if iso in byd:
+            return {"price": byd[iso], "date": iso, "exact": True}
+        d = self._date_on_or_before(symbol, iso)
+        return {"price": byd[d], "date": d, "exact": False} if d else None
 
     def volatility(self, symbol, from_iso, to_iso):
         """Sample stdev of simple daily returns over [from_iso, to_iso]. None if sparse."""
         dates = self._dates.get(symbol)
         if not dates:
             return None
-        byd = self._by_date[symbol]
-        closes = [byd[d]["close"] for d in dates if from_iso <= d <= to_iso]
+        byd = self._close[symbol]
+        closes = [byd[d] for d in dates if from_iso <= d <= to_iso]
         if len(closes) < 6:
             return None
         rets = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes)) if closes[i - 1] > 0]

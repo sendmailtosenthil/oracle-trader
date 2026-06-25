@@ -36,8 +36,9 @@ def cache_sig():
 
 @st.cache_resource(show_spinner=False)
 def _bundle(sig):
-    series = mdata.load_series()
-    return mdata.PriceBook(series), mdata.Calendar.from_series(series)
+    # Close-only PriceBook, stream-built one file at a time (low peak RAM).
+    pb = mdata.PriceBook.from_cache()
+    return pb, mdata.Calendar(pb.all_dates())
 
 
 def price_book():
