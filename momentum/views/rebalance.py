@@ -50,6 +50,15 @@ def _render_plan(db, cfg):
         st.success(plan.get("note", "Nothing to do — all holdings within threshold."))
         return
 
+    if plan.get("per_part"):
+        if plan["type"] == "deploy":
+            basis = f"₹{plan['investable']:,.0f} investment ÷ {len(plan['buys'])} stocks"
+        else:
+            basis = (f"pot ₹{plan['investable']:,.0f} (sell proceeds + idle cash) ÷ "
+                     f"{len(plan['buys'])} replacement(s)")
+        st.caption(f"🎯 Target capital per stock: **₹{plan['per_part']:,.0f}** — {basis}. "
+                   "(Replace sizing is dynamic: a smaller pot ⇒ smaller per-stock allocation.)")
+
     st.info("✏️ You can **edit Shares and Price** below before executing (e.g. to match "
             "your actual fills). Cost, charges, injection and cash recompute from your edits.")
 

@@ -170,7 +170,7 @@ def _persist_ranking(db, as_of, ranked):
 # ---------------------------------------------------------------------------
 # Allocation — equal-capital, gap-based redistribution
 # ---------------------------------------------------------------------------
-def allocate(picks, capital, side="buy"):
+def allocate(picks, capital, side="buy", round_up=False):
     """Allocate ``capital`` across ``picks`` (each has ``price``) into whole units.
 
     Algorithm (replaces the old residual cascade that could starve a stock when a
@@ -184,11 +184,14 @@ def allocate(picks, capital, side="buy"):
        (largest gap ≈ highest priced). A stock that reaches/exceeds ``per_part``
        stops receiving more — so redistribution can push a stock past the part by
        at most one unit, never further.
-    3. Leftover that can't buy another eligible unit becomes cash.
+    3. ``round_up`` (replace): if usable leftover remains, buy ONE more unit of the
+       priciest stock it covers more than half of (``leftover > price/2``), topping
+       up the small shortfall as injection — i.e. round to the nearest whole unit.
+    4. Leftover that can't buy another eligible unit becomes cash.
 
     Charges are accounted, so the leftover is post-charge. Returns
     ``{allocations, total_cost, charges, cash_left, injection}`` — ``injection`` is
-    the extra capital the min-1 rule forces when a pick costs more than its part.
+    the extra capital the min-1 / round-up rules force.
     """
     n = len(picks)
     if n == 0:
@@ -220,6 +223,15 @@ def allocate(picks, capital, side="buy"):
         target["shares"] += 1
         target["cost"] += target["price"]
         leftover = capital - total_cost() - total_charges()
+
+    # Round-up: leftover can't fully fund a unit, but if it covers >half a unit of
+    # some stock, buy that unit (inject the small shortfall) — round to nearest.
+    if round_up and leftover > 0:
+        affordable = [a for a in alloc if a["cost"] < per_part and a["price"] < 2 * leftover]
+        if affordable:
+            target = max(affordable, key=lambda a: a["price"])  # use the most leftover
+            target["shares"] += 1
+            target["cost"] += target["price"]
 
     tc, chg = total_cost(), total_charges()
     injection = max(0.0, tc + chg - capital)
@@ -271,6 +283,7 @@ def build_plan(db, ranking, as_of, price_book=None):
                 for a in res["allocations"] if a["shares"] > 0 and a["price"]]
         return {"type": "deploy", "as_of": as_of, "sells": [], "buys": buys,
                 "proceeds": 0.0, "investable": cfg.investment,
+                "per_part": cfg.investment / max(1, len(picks)),
                 "injection": res["injection"], "cash_left": res["cash_left"]}
 
     # --- Replacement: sell laggards, redeploy proceeds into best unheld ---
@@ -314,13 +327,14 @@ def build_plan(db, ranking, as_of, price_book=None):
             break
 
     investable = cfg.cash + proceeds if cfg.reinvest_idle_cash else proceeds
-    res = allocate(picks, investable, side="buy")
+    res = allocate(picks, investable, side="buy", round_up=True)
     buys = [{"symbol": a["symbol"], "rank": a.get("rank"), "shares": a["shares"],
              "price": a["price"], "cost": a["cost"],
              "charges": zerodha_charges(a["price"], a["shares"], "buy")}
             for a in res["allocations"] if a["shares"] > 0 and a["price"]]
     return {"type": "replace", "as_of": as_of, "sells": sells, "buys": buys,
             "proceeds": proceeds, "investable": investable,
+            "per_part": investable / max(1, len(picks)),
             "injection": res["injection"], "cash_left": res["cash_left"]}
 
 
