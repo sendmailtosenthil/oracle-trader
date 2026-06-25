@@ -41,7 +41,7 @@ KEEP_MONTHS = int(os.environ.get("DOWNLOADER_KEEP_MONTHS", "2"))
 # available RAM is below the hard floor; if RAM is merely low we drop to a
 # single worker to cap memory. Tunable via env for the specific VPS.
 MIN_FREE_DISK_MB = float(os.environ.get("DOWNLOADER_MIN_FREE_DISK_MB", "2000"))
-MIN_RAM_MB = float(os.environ.get("DOWNLOADER_MIN_RAM_MB", "300"))
+MIN_RAM_MB = float(os.environ.get("DOWNLOADER_MIN_RAM_MB", "20"))
 LOW_RAM_MB = float(os.environ.get("DOWNLOADER_LOW_RAM_MB", "700"))
 
 INDEX_HEADER = "symbol,timestamp,open,high,low,close,volume"
