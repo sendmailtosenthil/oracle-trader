@@ -52,7 +52,8 @@ def _render_plan(db, cfg):
 
     if plan.get("per_part"):
         if plan["type"] == "deploy":
-            basis = f"₹{plan['investable']:,.0f} investment ÷ {len(plan['buys'])} stocks"
+            basis = (f"₹{plan['investable']:,.0f} capital ÷ {len(plan['buys'])} stocks "
+                     "(both editable in the **Settings** tab)")
         else:
             basis = (f"pot ₹{plan['investable']:,.0f} (sell proceeds + idle cash) ÷ "
                      f"{len(plan['buys'])} replacement(s)")
