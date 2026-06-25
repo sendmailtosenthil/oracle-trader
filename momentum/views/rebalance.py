@@ -204,8 +204,13 @@ def _render_plan(db, cfg):
 
 
 # --------------------------------------------------------------------------
-def _do_refresh(broker, fetch_syms, from_date):
-    """Run a price refresh from ``from_date`` → today, persist the summary, rerun."""
+def _do_refresh(broker, fetch_syms, from_date, prune_to=None):
+    """Run a price refresh from ``from_date`` → today, persist the summary, rerun.
+
+    ``prune_to`` (a symbol set) trims the cache to exactly that set after fetching;
+    pass it for a full build (drop stale leftovers). Leave it None for a light
+    top-N refresh, which must NOT delete the rest of the universe's history.
+    """
     log_box = st.empty()
     msgs = []
 
@@ -218,10 +223,8 @@ def _do_refresh(broker, fetch_syms, from_date):
             enctoken=broker.enctoken, user_id=broker.user_id,
             symbols=fetch_syms, history_from=from_date, progress_cb=cb,
         )
-    # Keep the cache to exactly the fetched set (current 500 ∪ holdings) — drop
-    # stale/delisted leftovers so the count and coverage stay honest.
-    if not result["fatal"]:
-        result["pruned"] = mdata.prune_cache(fetch_syms)
+    if not result["fatal"] and prune_to is not None:
+        result["pruned"] = mdata.prune_cache(prune_to)
     H.clear_caches()
     st.session_state["mom_refresh_result"] = result
     st.rerun()
@@ -283,54 +286,57 @@ def _render_refresh(db, cfg):
     today = datetime.date.today()
     full_start = today - datetime.timedelta(days=455)
 
-    # Fetch the CURRENT index membership plus any held stocks (so holdings that
-    # have left the index still get priced). ~500 names in practice.
+    # Full universe set: current Nifty 500 ∪ holdings — used by the one-time build.
     from common.database import MomentumHolding
     current = {mdata.to_yahoo(s) for s in mdata.Universe.load().latest()}
     held = {h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()}
-    fetch_syms = sorted(current | held)
-    extra_held = len(held - current)
-    st.caption(f"Fetch set: current Nifty 500 ({len(current)})"
-               + (f" + {extra_held} held name(s) outside the index" if extra_held else "")
-               + f" = **{len(fetch_syms)}** stocks. The cache is pruned to exactly this "
-               "set on each refresh (stale names removed).")
+    full_syms = sorted(current | held)
 
     # Decide readiness from whether ranking ACTUALLY produces results — the
     # current universe must have enough history, not just *some* cached symbol.
-    # (earliest_bar above is the oldest across all 634 cached names, which can be
-    # old leftovers, so it's a misleading readiness signal.)
     ranking = H.get_ranking(db)
     has_ranking = bool(ranking["ranked"])
 
+    # Light daily set: top 50 by EITHER ranking (vol-adjusted or raw) ∪ holdings.
+    TOP_N = 50
+    top = {r["symbol"] for r in ranking["ranked"]
+           if r["rank"] <= TOP_N or (r.get("raw_rank") or 10 ** 9) <= TOP_N}
+    light_syms = sorted(top | held)
+
     st.divider()
-    # --- PRIMARY: daily latest-price refresh (no date to pick) ---
+    # --- PRIMARY: daily light refresh of the top names + holdings ---
     st.subheader("🔄 Refresh latest prices")
     if has_ranking:
-        st.caption(f"Fetches today's close for all {len(fetch_syms)} stocks "
-                   f"(tops up from the last bar **{latest_bar}** → today) and re-ranks. "
-                   "This is the daily action — no historical re-download.")
-        if st.button("🔄 Refresh now (latest prices)", type="primary"):
-            _do_refresh(broker, fetch_syms, datetime.date.fromisoformat(latest_bar))
+        st.caption(f"Fetches today's close for the **top {TOP_N}** by either ranking "
+                   f"(vol-adjusted or raw) + your {len(held)} holding(s) = "
+                   f"**{len(light_syms)}** stocks (tops up from **{latest_bar}** → today) "
+                   "and re-ranks. Light on Zerodha — a single day rarely shifts holdings or "
+                   "the rebalance, so this gives approximate PnL and any near-boundary rank "
+                   "slippage. The rest of the universe keeps its last full-refresh close.")
+        if st.button("🔄 Refresh now (top names + holdings)", type="primary"):
+            # No prune — the other ~450 names keep their history for re-ranking.
+            _do_refresh(broker, light_syms, datetime.date.fromisoformat(latest_bar))
     else:
         st.warning("⚠️ Ranking can't be computed yet — the current Nifty 500 names "
                    "lack the ~1-year of daily history the lookback needs.")
         summary = H.exclusion_summary(ranking)
         if summary:
             st.caption(f"Universe of {ranking.get('n_universe', 0)} excluded — {summary}.")
-        st.caption("Build the history once below (fetch from ~15 months back), then "
+        st.caption("Build the full history once below (fetch from ~15 months back), then "
                    "the daily **Refresh now** will appear here.")
 
-    # --- SECONDARY: one-time history build / repair (with date picker) ---
-    with st.expander("⚙️ Build / repair price history (one-time)", expanded=not has_ranking):
-        st.caption("Loads ~15 months of daily candles so the 3/6/9-month lookback "
-                   "exists. Needed only for first setup or to repair gaps — not for "
-                   "daily use. New bars merge in; existing history is kept.")
+    # --- SECONDARY: one-time full history build / repair (with date picker) ---
+    with st.expander("⚙️ Build / repair full price history (one-time)", expanded=not has_ranking):
+        st.caption(f"Loads ~15 months of daily candles for the full universe "
+                   f"({len(full_syms)} stocks: current Nifty 500 + holdings) so the "
+                   "3/6/9-month lookback exists. Needed for first setup or to repair gaps — "
+                   "not for daily use. Prunes the cache to this set (drops stale names).")
         history_from = st.date_input(
             "Fetch history from", value=full_start, max_value=today, format="YYYY-MM-DD",
             help="Start date for the historical daily candles (end is always today).",
         )
-        if st.button("⬇️ Fetch history from Zerodha"):
-            _do_refresh(broker, fetch_syms, history_from)
+        if st.button("⬇️ Fetch full history from Zerodha"):
+            _do_refresh(broker, full_syms, history_from, prune_to=set(full_syms))
 
 
 # --------------------------------------------------------------------------
