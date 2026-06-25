@@ -321,9 +321,12 @@ def build_plan(db, ranking, as_of, price_book=None):
                 "note": "All holdings still ranked within threshold."}
 
     proceeds = sum(s["price"] * s["shares"] - s["charges"] for s in sells if s["price"])
-    still_held = {h.symbol for h in holdings} - {s["symbol"] for s in sells}
+    # Replacements are the best-ranked names NOT in the portfolio at all — exclude
+    # both kept holdings and the laggards being sold (never re-buy what you sold).
+    # So if rank 1 isn't held, it's the first suggestion (not some 16th-rank name).
+    held_all = {h.symbol for h in holdings}
     needed = len(sells)
-    pool = build_pool(needed + RESERVE_COUNT, skip=still_held)
+    pool = build_pool(needed + RESERVE_COUNT, skip=held_all)
     investable = cfg.cash + proceeds if cfg.reinvest_idle_cash else proceeds
     return {"type": "replace", "as_of": as_of, "sells": sells, "pool": pool,
             "n_target": needed, "capital": investable, "proceeds": proceeds,
