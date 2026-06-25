@@ -303,19 +303,34 @@ def _render_refresh(db, cfg):
            if r["rank"] <= TOP_N or (r.get("raw_rank") or 10 ** 9) <= TOP_N}
     light_syms = sorted(top | held)
 
+    # Market hours (IST): open on a weekday between 09:15 and 15:30. After close
+    # (or pre-open / weekend) prices are settled, so refresh the FULL 500; during
+    # the session do the light top-N (intraday closes still move).
+    now_ist = datetime.datetime.now(mdata.IST)
+    market_open = (now_ist.weekday() < 5
+                   and datetime.time(9, 15) <= now_ist.time() <= datetime.time(15, 30))
+    from_date = datetime.date.fromisoformat(latest_bar) if latest_bar else full_start
+
     st.divider()
-    # --- PRIMARY: daily light refresh of the top names + holdings ---
+    # --- PRIMARY: daily refresh — light intraday, full after close ---
     st.subheader("🔄 Refresh latest prices")
     if has_ranking:
-        st.caption(f"Fetches today's close for the **top {TOP_N}** by either ranking "
-                   f"(vol-adjusted or raw) + your {len(held)} holding(s) = "
-                   f"**{len(light_syms)}** stocks (tops up from **{latest_bar}** → today) "
-                   "and re-ranks. Light on Zerodha — a single day rarely shifts holdings or "
-                   "the rebalance, so this gives approximate PnL and any near-boundary rank "
-                   "slippage. The rest of the universe keeps its last full-refresh close.")
-        if st.button("🔄 Refresh now (top names + holdings)", type="primary"):
-            # No prune — the other ~450 names keep their history for re-ranking.
-            _do_refresh(broker, light_syms, datetime.date.fromisoformat(latest_bar))
+        if market_open:
+            st.caption(f"**Market open** — fetches the **top {TOP_N}** by either ranking "
+                       f"(vol-adjusted or raw) + your {len(held)} holding(s) = "
+                       f"**{len(light_syms)}** stocks and re-ranks. Light on Zerodha; a single "
+                       "intraday move rarely shifts holdings/rebalance, so this gives "
+                       "approximate PnL + near-boundary slippage. The rest keep their last "
+                       "close. After **3:30 PM IST** this becomes a full 500 refresh.")
+            if st.button("🔄 Refresh now (top names + holdings)", type="primary"):
+                # No prune — the other ~450 names keep their history for re-ranking.
+                _do_refresh(broker, light_syms, from_date)
+        else:
+            st.caption(f"**Market closed** — fetches the **full {len(full_syms)}** "
+                       "(current Nifty 500 + holdings) on settled closes, re-ranks, and "
+                       "prunes stale names. Use this for the accurate end-of-day ranking.")
+            if st.button("🔄 Refresh now (full 500 — settled closes)", type="primary"):
+                _do_refresh(broker, full_syms, from_date, prune_to=set(full_syms))
     else:
         st.warning("⚠️ Ranking can't be computed yet — the current Nifty 500 names "
                    "lack the ~1-year of daily history the lookback needs.")
