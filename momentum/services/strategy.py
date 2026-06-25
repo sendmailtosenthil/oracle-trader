@@ -144,13 +144,17 @@ def rank_universe(price_book, calendar, cfg, as_of=None):
 
 
 def compute_ranking(db, as_of=None, persist=True):
-    """Rank from the cached prices and (optionally) persist the snapshot to the DB."""
+    """Rank from the cached prices and (optionally) persist the snapshot to the DB.
+
+    Streams the universe via ``LazyPriceBook`` (one symbol at a time) so a full
+    500-name rank costs a few MB, not tens of MB — important on a small host.
+    """
     cfg = get_config(db)
-    pb = mdata.PriceBook.from_cache()
-    if not pb.symbols():
+    dates = mdata.all_cached_dates()
+    if not dates:
         return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None,
                 "n_universe": 0, "error": "No cached price data found."}
-    result = rank_universe(pb, mdata.Calendar(pb.all_dates()), cfg, as_of)
+    result = rank_universe(mdata.LazyPriceBook(), mdata.Calendar(dates), cfg, as_of)
     if persist and result["ranked"]:
         _persist_ranking(db, result["as_of"], result["ranked"])
     return result

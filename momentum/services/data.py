@@ -306,6 +306,92 @@ class PriceBook:
         return sum(1 for d in dates if from_iso <= d <= to_iso)
 
 
+def all_cached_dates():
+    """Sorted union of all bar dates across the cache — built by streaming files
+    (holds only the date set, never the bars). Used as the ranking calendar."""
+    dates = set()
+    for path in glob.glob(os.path.join(cache_dir(), "*.json")):
+        try:
+            with open(path) as f:
+                payload = json.load(f)
+        except (ValueError, OSError):
+            continue
+        for b in (payload.get("bars") or []):
+            dates.add(b["date"])
+    return sorted(dates)
+
+
+class LazyPriceBook:
+    """Close-only price accessor that loads **one symbol at a time** from disk.
+
+    Exposes the same read methods ``score_universe`` uses (has / close_as_of /
+    volatility / coverage). Because scoring touches a symbol's data in one
+    consecutive burst, keeping just the last-loaded symbol gives O(1-symbol) RAM
+    — so the whole 500-name universe can be scored in a few MB. ``from_cache``
+    (the eager close-only book) remains for small symbol sets (holdings / pool).
+    """
+
+    def __init__(self):
+        self._sym = None
+        self._dates = []
+        self._close = {}
+
+    def _load(self, symbol):
+        if symbol == self._sym:
+            return
+        self._sym, self._dates, self._close = symbol, [], {}
+        path = os.path.join(cache_dir(), f"{symbol}.json")
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                bars = (json.load(f).get("bars") or [])
+        except (ValueError, OSError):
+            return
+        ordered = sorted(bars, key=lambda b: b["date"])
+        self._dates = [b["date"] for b in ordered]
+        self._close = {b["date"]: b["close"] for b in ordered}
+
+    def symbols(self):
+        return available_symbols()
+
+    def has(self, symbol):
+        self._load(symbol)
+        return bool(self._dates)
+
+    def _date_on_or_before(self, iso):
+        dates = self._dates
+        lo, hi = 0, len(dates)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if dates[mid] <= iso:
+                lo = mid + 1
+            else:
+                hi = mid
+        return dates[lo - 1] if lo - 1 >= 0 else None
+
+    def close_as_of(self, symbol, iso):
+        self._load(symbol)
+        d = self._date_on_or_before(iso)
+        return self._close[d] if d else None
+
+    def volatility(self, symbol, from_iso, to_iso):
+        self._load(symbol)
+        closes = [self._close[d] for d in self._dates if from_iso <= d <= to_iso]
+        if len(closes) < 6:
+            return None
+        rets = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes)) if closes[i - 1] > 0]
+        if len(rets) < 5:
+            return None
+        mean = sum(rets) / len(rets)
+        variance = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        return variance ** 0.5
+
+    def coverage(self, symbol, from_iso, to_iso):
+        self._load(symbol)
+        return sum(1 for d in self._dates if from_iso <= d <= to_iso)
+
+
 # ---------------------------------------------------------------------------
 # Universe (point-in-time index membership)
 # ---------------------------------------------------------------------------
@@ -515,17 +601,12 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
     os.makedirs(cache_dir(), exist_ok=True)
 
     try:
-        emit("Loading Kite instruments master...")
+        emit("Loading NSE-equity token map (streamed)...")
         client = ZerodhaClient(enctoken, user_id=user_id, pace_seconds=0.2)
         if not client.validate():
             raise FatalAuthError("Invalid or expired enctoken.")
-        client.load_instruments()
-
-        # Index NSE equities by tradingsymbol for token resolution.
-        by_tsym = {}
-        for item in client.instruments:
-            if item.get("segment") == "NSE" and item.get("instrument_type") == "EQ":
-                by_tsym[item["tradingsymbol"]] = item["instrument_token"]
+        # Slim, streamed token map (~2k entries) — not the full ~100k master.
+        by_tsym = client.nse_eq_token_map()
 
         frm = datetime.datetime.combine(datetime.date.fromisoformat(history_from),
                                         datetime.time(9, 15))
