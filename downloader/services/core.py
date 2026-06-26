@@ -42,10 +42,11 @@ KEEP_MONTHS = int(os.environ.get("DOWNLOADER_KEEP_MONTHS", "2"))
 # single worker to cap memory. Tunable via env for the specific VPS.
 MIN_FREE_DISK_MB = float(os.environ.get("DOWNLOADER_MIN_FREE_DISK_MB", "2000"))
 MIN_RAM_MB = float(os.environ.get("DOWNLOADER_MIN_RAM_MB", "20"))
-# Below this available-RAM mark we drop to a single worker. Kept low because a
-# swap file backs the host and the streamed-to-disk writes keep per-worker
-# memory tiny — so the full worker pool is safe with only a few hundred MB free.
-LOW_RAM_MB = float(os.environ.get("DOWNLOADER_LOW_RAM_MB", "150"))
+# Worker count scales with available RAM: ~one worker per this many MB, capped at
+# MAX_CONCURRENCY. With 50 MB/worker this gives 200MB->4, 120MB->2, 75MB->1, and
+# anything below MIN_RAM_MB aborts. Per-worker memory is tiny (candles stream to
+# disk) and a swap file backs the host, so this budget is comfortable.
+RAM_PER_WORKER_MB = float(os.environ.get("DOWNLOADER_RAM_PER_WORKER_MB", "50"))
 
 INDEX_HEADER = "symbol,timestamp,open,high,low,close,volume"
 CONTRACT_HEADER = "symbol,expiry,strike,type,timestamp,open,high,low,close,volume,oi"
@@ -264,13 +265,17 @@ def _preflight_guard(report):
                      f"<p>Free disk: {disk_txt}.</p>")
         return None
 
-    workers = MAX_CONCURRENCY
-    if ram is not None and ram < LOW_RAM_MB:
-        workers = 1
-        note = f"Low RAM ({ram_txt}) — running single-threaded to limit memory."
+    if ram is None:
+        return MAX_CONCURRENCY  # unknown RAM (non-Linux) — don't throttle
+
+    # Scale workers with available RAM (~one per RAM_PER_WORKER_MB), capped.
+    workers = min(MAX_CONCURRENCY, max(1, int(ram // RAM_PER_WORKER_MB)))
+    if workers < MAX_CONCURRENCY:
+        note = (f"Low RAM ({ram_txt}) — running with {workers} worker"
+                f"{'s' if workers != 1 else ''} to limit memory.")
         report.errors.append(note)
         _guard_email("⚠️ Oracle Download degraded — low RAM",
-                     f"<h2>⚠️ Download running in low-memory mode</h2><p>{note}</p>"
+                     f"<h2>⚠️ Download running with reduced concurrency</h2><p>{note}</p>"
                      f"<p>Free disk: {disk_txt}.</p>")
     return workers
 
