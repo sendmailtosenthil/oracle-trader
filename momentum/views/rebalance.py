@@ -365,7 +365,23 @@ def _render_refresh(db, cfg):
 # --------------------------------------------------------------------------
 def _render_config(db, cfg):
     st.write("Strategy parameters (ported from quant-momentum's `config.js`).")
+    _MODELS = {
+        "risk_adjusted": "Risk-adjusted (blended return ÷ daily volatility)",
+        "clenow": "Clenow trend (annualised log-slope × R² — smooth, continuous)",
+        "obv": "OBV-confirmed (momentum + on-balance-volume accumulation)",
+    }
     with st.form("momentum_config"):
+        model_keys = list(_MODELS.keys())
+        cur_model = cfg.scoring_model if cfg.scoring_model in _MODELS else "risk_adjusted"
+        scoring_model = st.selectbox(
+            "Scoring model", model_keys, index=model_keys.index(cur_model),
+            format_func=lambda k: _MODELS[k],
+            help="risk_adjusted: classic Sharpe-like. clenow: rewards the straightest "
+                 "uptrend (R²). obv: blends momentum with volume accumulation.",
+        )
+        clenow_days = st.number_input("Clenow regression window (trading days)",
+                                      min_value=20, max_value=252, value=int(cfg.clenow_days),
+                                      step=10, help="Used only by the Clenow model (≈90 ~ 4 months).")
         c1, c2 = st.columns(2)
         investment = c1.number_input("Initial capital (₹)", min_value=1000.0,
                                      value=float(cfg.investment), step=1000.0)
@@ -397,6 +413,8 @@ def _render_config(db, cfg):
             return
         cfg.investment = investment
         cfg.num_stocks = int(num_stocks)
+        cfg.scoring_model = scoring_model
+        cfg.clenow_days = int(clenow_days)
         cfg.replace_rank_threshold = int(threshold)
         cfg.reinvest_idle_cash = bool(reinvest)
         cfg.vol_enabled = bool(vol_enabled)

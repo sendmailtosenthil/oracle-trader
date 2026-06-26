@@ -37,6 +37,7 @@ def render(db):
             f"bar **{latest_bar or '—'}**  ·  ranking as of **{ranking['as_of']}**  ·  "
             f"universe snapshot **{ranking['snapshot_date']}** "
             f"({ranking['n_universe']} names, {len(ranking['ranked'])} ranked)  ·  "
+            f"model **{cfg.scoring_model}**  ·  "
             f"holding **{cfg.num_stocks}** stocks"
         )
 

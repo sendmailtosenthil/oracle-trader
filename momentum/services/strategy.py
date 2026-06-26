@@ -56,6 +56,70 @@ def factors(cfg):
                 {"months": 9, "weight": 0.28}]
 
 
+def _linreg(ys):
+    """Least-squares fit of ys vs index 0..n-1. Returns (slope, intercept, r2)."""
+    n = len(ys)
+    if n < 2:
+        return None
+    xs = range(n)
+    mx = (n - 1) / 2.0
+    my = sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    sxy = sum((x - mx) * (ys[i] - my) for i, x in enumerate(xs))
+    if sxx == 0:
+        return None
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    ss_tot = sum((y - my) ** 2 for y in ys)
+    ss_res = sum((ys[i] - (intercept + slope * i)) ** 2 for i in range(n))
+    r2 = (1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    return slope, intercept, r2
+
+
+def clenow_score(closes):
+    """Clenow exponential-regression momentum: fit ln(price) vs time, then
+    score = annualised slope × R². Rewards a steep AND straight (smooth) trend;
+    a jagged climb with the same total gain scores lower (low R²). Returns
+    (score, annualised_return, r2) or None if too few points."""
+    import math
+    closes = [c for c in closes if c and c > 0]
+    if len(closes) < 20:
+        return None
+    fit = _linreg([math.log(c) for c in closes])
+    if not fit:
+        return None
+    slope, _, r2 = fit
+    annualised = math.exp(slope) ** 252 - 1   # daily log-slope -> yearly return
+    return annualised * r2, annualised, r2
+
+
+def obv_slope_norm(closes, volumes):
+    """On-Balance-Volume accumulation signal.
+
+    OBV is a running tally that ADDS the day's volume when price closes up and
+    SUBTRACTS it when price closes down — so a rising OBV means volume is
+    concentrated on up-days (accumulation / demand), a falling OBV means
+    distribution. We fit a trend line to the OBV series and normalise its slope
+    by average daily volume → 'net daily accumulation as a fraction of typical
+    volume'. Positive = being accumulated; negative = being distributed.
+    """
+    n = min(len(closes), len(volumes))
+    if n < 10:
+        return None
+    obv, series = 0.0, []
+    for i in range(1, n):
+        if closes[i] > closes[i - 1]:
+            obv += volumes[i]
+        elif closes[i] < closes[i - 1]:
+            obv -= volumes[i]
+        series.append(obv)
+    fit = _linreg(series)
+    avg_vol = sum(volumes[:n]) / n
+    if not fit or avg_vol <= 0:
+        return None
+    return fit[0] / avg_vol   # slope per day, in units of average daily volume
+
+
 # ---------------------------------------------------------------------------
 # Scoring / ranking (port of weighted-momentum.js)
 # ---------------------------------------------------------------------------
@@ -70,11 +134,14 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
     min_cov = cfg.min_history_coverage or 0.8
     vol_enabled = bool(cfg.vol_enabled)
     vol_months = cfg.vol_months or 3
+    model = (getattr(cfg, "scoring_model", None) or "risk_adjusted")
+    clenow_days = getattr(cfg, "clenow_days", None) or 90
 
     max_months = max([f["months"] for f in facs] + ([vol_months] if vol_enabled else [0]))
     window_start = calendar.months_back(as_of, max_months)
     expected_bars = sum(1 for d in calendar.dates if window_start <= d <= as_of) if window_start else 0
     vol_start = calendar.months_back(as_of, vol_months) if vol_enabled else None
+    clenow_start = calendar.n_days_back(as_of, clenow_days) if model in ("clenow",) else None
 
     ranked, excluded = [], []
     for sym in candidates:
@@ -87,6 +154,8 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
                 excluded.append({"symbol": sym, "reason": "insufficient-history"})
                 continue
 
+        # Always compute blended/factor returns + daily vol (shown in the UI for
+        # context, regardless of which model drives the ranking).
         factor_rets, bad = [], False
         for f in facs:
             anchor = calendar.months_back(as_of, f["months"])
@@ -99,22 +168,52 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
         if bad:
             excluded.append({"symbol": sym, "reason": "missing-lookback-anchor"})
             continue
-
         blended = sum((fr["weight"] / w_sum) * fr["ret"] for fr in factor_rets)
-        value, vol = blended, None
-        if vol_enabled:
-            vol = price_book.volatility(sym, vol_start, as_of)
-            if vol is None or vol <= 0:
-                excluded.append({"symbol": sym, "reason": "missing-volatility"})
-                continue
-            value = blended / vol
+        vol = price_book.volatility(sym, vol_start or window_start, as_of)
 
-        row = {"symbol": sym, "value": value, "blended": blended, "vol": vol}
+        row = {"symbol": sym, "blended": blended, "vol": vol}
         for fr in factor_rets:
             row[f"r{fr['months']}m"] = fr["ret"]
+
+        # --- model-specific score ---
+        if model == "clenow":
+            closes, _ = price_book.window(sym, clenow_start, as_of)
+            cl = clenow_score(closes)
+            if cl is None:
+                excluded.append({"symbol": sym, "reason": "insufficient-history"})
+                continue
+            row["value"], row["clenow_ann"], row["clenow_r2"] = cl
+        elif model == "obv":
+            closes, vols = price_book.window(sym, window_start, as_of)
+            osn = obv_slope_norm(closes, vols)
+            if osn is None:
+                excluded.append({"symbol": sym, "reason": "missing-volume"})
+                continue
+            row["obv"] = osn
+            row["value"] = blended  # placeholder; finalised by z-combine below
+        else:  # risk_adjusted (default)
+            if vol_enabled:
+                if not vol or vol <= 0:
+                    excluded.append({"symbol": sym, "reason": "missing-volatility"})
+                    continue
+                row["value"] = blended / vol
+            else:
+                row["value"] = blended
         ranked.append(row)
 
-    # Primary rank: risk-adjusted score (value). Also assign a raw-momentum rank
+    # OBV model: combine standardised momentum + standardised accumulation across
+    # the cross-section (momentum-led, volume-confirmed).
+    if model == "obv" and ranked:
+        def _z(key):
+            vals = [r[key] for r in ranked]
+            mu = sum(vals) / len(vals)
+            sd = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5 or 1.0
+            return {id(r): (r[key] - mu) / sd for r in ranked}
+        zb, zo = _z("blended"), _z("obv")
+        for r in ranked:
+            r["value"] = 0.6 * zb[id(r)] + 0.4 * zo[id(r)]
+
+    # Primary rank: model score (value). Also assign a raw-momentum rank
     # (by blended return only) so the UI can show both orderings side by side.
     ranked.sort(key=lambda r: r["value"], reverse=True)
     for i, row in enumerate(ranked):

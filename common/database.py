@@ -86,6 +86,8 @@ class MomentumConfig(Base):
     id = Column(Integer, primary_key=True)
     investment = Column(Float, default=100000.0)        # initial capital (₹)
     num_stocks = Column(Integer, default=15)            # equal-weight holdings
+    scoring_model = Column(String, default='risk_adjusted')  # risk_adjusted|clenow|obv
+    clenow_days = Column(Integer, default=90)           # regression window (clenow model)
     factors_json = Column(String, default='[{"months": 3, "weight": 0.40}, {"months": 6, "weight": 0.32}, {"months": 9, "weight": 0.28}]')
     vol_enabled = Column(Boolean, default=True)         # risk-adjust by volatility
     vol_months = Column(Integer, default=3)             # volatility lookback
@@ -180,6 +182,8 @@ def _ensure_columns():
     wanted = {
         'momentum_trades': [('charges', 'FLOAT DEFAULT 0.0')],
         'momentum_rankings': [('raw_rank', 'INTEGER')],
+        'momentum_config': [("scoring_model", "VARCHAR DEFAULT 'risk_adjusted'"),
+                            ('clenow_days', 'INTEGER DEFAULT 90')],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

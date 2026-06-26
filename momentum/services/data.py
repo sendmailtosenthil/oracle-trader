@@ -189,6 +189,14 @@ class Calendar:
         back = _add_months(d, -months)
         return self.on_or_before(back.isoformat())
 
+    def n_days_back(self, iso, n):
+        """The trading day ``n`` positions before ``iso`` (clamped to the first)."""
+        idx = self.on_or_before(iso)
+        if idx is None:
+            return None
+        pos = self.dates.index(idx)
+        return self.dates[max(0, pos - n)]
+
 
 # ---------------------------------------------------------------------------
 # PriceBook
@@ -335,11 +343,12 @@ class LazyPriceBook:
         self._sym = None
         self._dates = []
         self._close = {}
+        self._vol = {}
 
     def _load(self, symbol):
         if symbol == self._sym:
             return
-        self._sym, self._dates, self._close = symbol, [], {}
+        self._sym, self._dates, self._close, self._vol = symbol, [], {}, {}
         path = os.path.join(cache_dir(), f"{symbol}.json")
         if not os.path.exists(path):
             return
@@ -351,6 +360,18 @@ class LazyPriceBook:
         ordered = sorted(bars, key=lambda b: b["date"])
         self._dates = [b["date"] for b in ordered]
         self._close = {b["date"]: b["close"] for b in ordered}
+        self._vol = {b["date"]: b.get("volume", 0) for b in ordered}
+
+    def window(self, symbol, from_iso, to_iso):
+        """(closes, volumes) for dates in [from_iso, to_iso] ascending — for the
+        clenow/OBV models. Volumes are 0 where missing."""
+        self._load(symbol)
+        closes, vols = [], []
+        for d in self._dates:
+            if from_iso <= d <= to_iso:
+                closes.append(self._close[d])
+                vols.append(self._vol.get(d, 0))
+        return closes, vols
 
     def symbols(self):
         return available_symbols()
