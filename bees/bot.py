@@ -14,7 +14,7 @@ import sys
 
 import pytz
 
-from common.database import Strategy, PendingSwitch, Portfolio, init_db, get_db
+from common.database import Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
 from common.notifications import send_email
 from bees.donchian import evaluate_donchian_intraday
 from downloader.jobs import run_daily_download, run_db_backup
@@ -117,6 +117,15 @@ def send_daily_summary():
         invested = sum([p.invested_amount for p in portfolios])
         roi = ((total_val / invested) - 1) * 100 if invested > 0 else 0
 
+        # Actual cash put in: deposits are negative amounts, withdrawals positive,
+        # so net cash invested = -(sum of cash flows). Return on that cash is the
+        # current holdings value vs. the cash committed.
+        cash_flows = db.query(CashFlow).filter(CashFlow.strategy_id == strat.id).all()
+        cash_invested = -sum(cf.amount for cf in cash_flows)
+        cash_return = total_val - cash_invested
+        cash_return_pct = ((total_val / cash_invested) - 1) * 100 if cash_invested > 0 else 0
+        cash_color = 'green' if cash_return >= 0 else 'red'
+
         pending = db.query(PendingSwitch).filter(PendingSwitch.strategy_id == strat.id, PendingSwitch.status == 'PENDING').first()
         status_text = "<span style='color:red; font-weight:bold;'>PENDING BATCH SWITCH</span>" if pending else "<span style='color:green;'>All good, holding steady.</span>"
 
@@ -128,7 +137,9 @@ def send_daily_summary():
                 <tr><th>{strat.asset1} Units</th><td>{asset1_port.units:.2f}</td></tr>
                 <tr><th>{strat.asset2} Units</th><td>{asset2_port.units:.2f}</td></tr>
                 <tr><th>Total Invested</th><td>₹{invested:,.2f}</td></tr>
+                <tr><th>Cash Invested (net)</th><td>₹{cash_invested:,.2f}</td></tr>
                 <tr><th>Current Value</th><td><b>₹{total_val:,.2f}</b></td></tr>
+                <tr><th>Return on Cash Invested</th><td style="color: {cash_color};">₹{cash_return:,.2f} ({cash_return_pct:.2f}%)</td></tr>
                 <tr><th>Overall ROI</th><td style="color: {'green' if roi >= 0 else 'red'};">{roi:.2f}%</td></tr>
             </table>
         </div>
