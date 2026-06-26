@@ -136,7 +136,7 @@ def send_daily_summary():
             <table style="width: 100%; text-align: left;">
                 <tr><th>{strat.asset1} Units</th><td>{asset1_port.units:.2f}</td></tr>
                 <tr><th>{strat.asset2} Units</th><td>{asset2_port.units:.2f}</td></tr>
-                <tr><th>Total Invested</th><td>₹{invested:,.2f}</td></tr>
+                <tr><th>Total Reinvested</th><td>₹{invested:,.2f}</td></tr>
                 <tr><th>Cash Invested (net)</th><td>₹{cash_invested:,.2f}</td></tr>
                 <tr><th>Current Value</th><td><b>₹{total_val:,.2f}</b></td></tr>
                 <tr><th>Return on Cash Invested</th><td style="color: {cash_color};">₹{cash_return:,.2f} ({cash_return_pct:.2f}%)</td></tr>
