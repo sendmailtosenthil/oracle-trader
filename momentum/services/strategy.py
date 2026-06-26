@@ -11,6 +11,7 @@ date" is the latest trading day in the cache and execution prices come from the
 latest bar. Holdings and cash are derived from the append-only
 ``MomentumTrade`` ledger so the books always reconcile.
 """
+import datetime
 import json
 
 from common.database import (
@@ -170,7 +171,12 @@ def score_universe(price_book, calendar, candidates, as_of, cfg, delivery=None):
     window_start = calendar.months_back(as_of, max_months)
     expected_bars = sum(1 for d in calendar.dates if window_start <= d <= as_of) if window_start else 0
     vol_start = calendar.months_back(as_of, vol_months) if vol_enabled else None
-    clenow_start = calendar.n_days_back(as_of, clenow_days) if model in ("clenow",) else None
+    # Clenow window is a CALENDAR span (use whatever trading days fall inside),
+    # consistent with the factor/volatility windows. ~180 cal days ≈ 6 months.
+    clenow_start = None
+    if model == "clenow":
+        start_d = datetime.date.fromisoformat(as_of) - datetime.timedelta(days=clenow_days)
+        clenow_start = calendar.on_or_before(start_d.isoformat())
 
     ranked, excluded = [], []
     for sym in candidates:

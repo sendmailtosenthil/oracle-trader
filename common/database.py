@@ -97,9 +97,10 @@ class MomentumConfig(Base):
     id = Column(Integer, primary_key=True)
     investment = Column(Float, default=100000.0)        # initial capital (₹)
     num_stocks = Column(Integer, default=15)            # equal-weight holdings
-    scoring_model = Column(String, default='risk_adjusted')  # risk_adjusted|clenow|obv
-    clenow_days = Column(Integer, default=90)           # regression window (clenow model)
-    factors_json = Column(String, default='[{"months": 3, "weight": 0.40}, {"months": 6, "weight": 0.32}, {"months": 9, "weight": 0.28}]')
+    scoring_model = Column(String, default='clenow')   # risk_adjusted|clenow|obv|delivery
+    clenow_days = Column(Integer, default=180)          # Clenow regression window (CALENDAR days ≈ 6 months)
+    rebalance_days = Column(Integer, default=14)        # rebalance cadence (bi-weekly)
+    factors_json = Column(String, default='[{"months": 3, "weight": 0.30}, {"months": 6, "weight": 0.50}, {"months": 9, "weight": 0.20}]')
     vol_enabled = Column(Boolean, default=True)         # risk-adjust by volatility
     vol_months = Column(Integer, default=3)             # volatility lookback
     min_history_coverage = Column(Float, default=0.8)   # min fraction of expected bars
@@ -194,7 +195,8 @@ def _ensure_columns():
         'momentum_trades': [('charges', 'FLOAT DEFAULT 0.0')],
         'momentum_rankings': [('raw_rank', 'INTEGER')],
         'momentum_config': [("scoring_model", "VARCHAR DEFAULT 'risk_adjusted'"),
-                            ('clenow_days', 'INTEGER DEFAULT 90')],
+                            ('clenow_days', 'INTEGER DEFAULT 90'),
+                            ('rebalance_days', 'INTEGER DEFAULT 14')],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

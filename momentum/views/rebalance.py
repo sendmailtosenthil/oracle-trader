@@ -51,6 +51,24 @@ def _render_plan(db, cfg):
                f"({plan['as_of']}) — today's running close during market hours, "
                "or the day's settled close otherwise.")
 
+    # Bi-weekly cadence reminder (manual: this just flags when a rebalance is due).
+    from common.database import MomentumTrade
+    last_trade = (db.query(MomentumTrade.date)
+                  .order_by(MomentumTrade.date.desc()).first())
+    if last_trade and last_trade[0]:
+        try:
+            last_d = datetime.date.fromisoformat(last_trade[0])
+            due_d = last_d + datetime.timedelta(days=int(cfg.rebalance_days))
+            today = datetime.date.today()
+            if today >= due_d:
+                st.warning(f"🗓️ Rebalance **due** — last was {last_d} ({(today - last_d).days}d ago); "
+                           f"cadence is every {cfg.rebalance_days}d.")
+            else:
+                st.caption(f"🗓️ Last rebalanced {last_d}; next due **{due_d}** "
+                           f"(in {(due_d - today).days}d, {cfg.rebalance_days}-day cadence).")
+        except (ValueError, TypeError):
+            pass
+
     if plan["type"] == "hold":
         st.success(plan.get("note", "Nothing to do — all holdings within threshold."))
         return
@@ -395,9 +413,14 @@ def _render_config(db, cfg):
             help="risk_adjusted: classic Sharpe-like. clenow: rewards the straightest "
                  "uptrend (R²). obv: blends momentum with volume accumulation.",
         )
-        clenow_days = st.number_input("Clenow regression window (trading days)",
-                                      min_value=20, max_value=252, value=int(cfg.clenow_days),
-                                      step=10, help="Used only by the Clenow model (≈90 ~ 4 months).")
+        cc1, cc2 = st.columns(2)
+        clenow_days = cc1.number_input("Clenow window (calendar days)",
+                                       min_value=40, max_value=400, value=int(cfg.clenow_days),
+                                       step=10, help="Clenow model only. Calendar span; uses the "
+                                       "trading days within. ~180 ≈ 6 months.")
+        rebalance_days = cc2.number_input("Rebalance every (calendar days)",
+                                          min_value=1, max_value=120, value=int(cfg.rebalance_days),
+                                          step=1, help="Cadence reminder on the Plan tab. 14 = bi-weekly.")
         c1, c2 = st.columns(2)
         investment = c1.number_input("Initial capital (₹)", min_value=1000.0,
                                      value=float(cfg.investment), step=1000.0)
@@ -431,6 +454,7 @@ def _render_config(db, cfg):
         cfg.num_stocks = int(num_stocks)
         cfg.scoring_model = scoring_model
         cfg.clenow_days = int(clenow_days)
+        cfg.rebalance_days = int(rebalance_days)
         cfg.replace_rank_threshold = int(threshold)
         cfg.reinvest_idle_cash = bool(reinvest)
         cfg.vol_enabled = bool(vol_enabled)
