@@ -174,7 +174,7 @@ def score_universe(price_book, calendar, candidates, as_of, cfg, delivery=None):
     # Clenow window is a CALENDAR span (use whatever trading days fall inside),
     # consistent with the factor/volatility windows. ~180 cal days ≈ 6 months.
     clenow_start = None
-    if model == "clenow":
+    if model in ("clenow", "blended"):
         start_d = datetime.date.fromisoformat(as_of) - datetime.timedelta(days=clenow_days)
         clenow_start = calendar.on_or_before(start_d.isoformat())
 
@@ -229,6 +229,17 @@ def score_universe(price_book, calendar, candidates, as_of, cfg, delivery=None):
         elif model == "delivery":
             row["deliv"] = delivery.get(sym)   # may be None (no bhavcopy yet)
             row["value"] = blended  # placeholder; finalised by z-combine below
+        elif model == "blended":
+            # Clenow trend + accumulation (delivery % and OBV) confirmation.
+            cl = clenow_score(price_book.window(sym, clenow_start, as_of)[0])
+            if cl is None:
+                excluded.append({"symbol": sym, "reason": "insufficient-history"})
+                continue
+            row["clenow_val"], row["clenow_ann"], row["clenow_r2"] = cl
+            closes_o, vols_o = price_book.window(sym, window_start, as_of)
+            row["obv"] = obv_slope_norm(closes_o, vols_o)   # may be None
+            row["deliv"] = delivery.get(sym)                # may be None
+            row["value"] = cl[0]  # placeholder; finalised by z-combine below
         else:  # risk_adjusted (default)
             if vol_enabled:
                 if not vol or vol <= 0:
@@ -239,22 +250,27 @@ def score_universe(price_book, calendar, candidates, as_of, cfg, delivery=None):
                 row["value"] = blended
         ranked.append(row)
 
-    # Accumulation models: combine standardised momentum + standardised
-    # accumulation across the cross-section (momentum-led, volume/delivery-confirmed).
-    if model in ("obv", "delivery") and ranked:
+    # Accumulation / blended models: combine standardised components across the
+    # cross-section (trend-led, volume/delivery-confirmed). Missing component →
+    # neutral (z = 0), so a stock still ranks on what data it has.
+    if model in ("obv", "delivery", "blended") and ranked:
         def _z(key):
             vals = [r[key] for r in ranked if r.get(key) is not None]
             if not vals:
                 return {id(r): 0.0 for r in ranked}
             mu = sum(vals) / len(vals)
             sd = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5 or 1.0
-            # Missing accumulation data → neutral (z = 0), so the stock ranks on momentum.
             return {id(r): ((r[key] - mu) / sd if r.get(key) is not None else 0.0)
                     for r in ranked}
-        zb = _z("blended")
-        zacc = _z("obv") if model == "obv" else _z("deliv")
-        for r in ranked:
-            r["value"] = 0.6 * zb[id(r)] + 0.4 * zacc[id(r)]
+        if model == "blended":
+            zc, zd, zo = _z("clenow_val"), _z("deliv"), _z("obv")
+            for r in ranked:                       # trend-led, accumulation-confirmed
+                r["value"] = 0.6 * zc[id(r)] + 0.2 * zd[id(r)] + 0.2 * zo[id(r)]
+        else:
+            zb = _z("blended")
+            zacc = _z("obv") if model == "obv" else _z("deliv")
+            for r in ranked:
+                r["value"] = 0.6 * zb[id(r)] + 0.4 * zacc[id(r)]
 
     # Primary rank: model score (value). Also assign a raw-momentum rank
     # (by blended return only) so the UI can show both orderings side by side.
@@ -296,7 +312,7 @@ def compute_ranking(db, as_of=None, persist=True):
     if not dates:
         return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None,
                 "n_universe": 0, "error": "No cached price data found."}
-    deliv = delivery_map(db) if (cfg.scoring_model == "delivery") else None
+    deliv = delivery_map(db) if (cfg.scoring_model in ("delivery", "blended")) else None
     result = rank_universe(mdata.LazyPriceBook(), mdata.Calendar(dates), cfg, as_of, delivery=deliv)
     if persist and result["ranked"]:
         _persist_ranking(db, result["as_of"], result["ranked"])

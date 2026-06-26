@@ -403,6 +403,7 @@ def _render_config(db, cfg):
         "clenow": "Clenow trend (annualised log-slope × R² — smooth, continuous)",
         "obv": "OBV-confirmed (momentum + on-balance-volume accumulation)",
         "delivery": "Delivery-confirmed (momentum + NSE delivery % — real buying)",
+        "blended": "Blended (Clenow trend 60% + delivery 20% + OBV 20%)",
     }
     with st.form("momentum_config"):
         model_keys = list(_MODELS.keys())
