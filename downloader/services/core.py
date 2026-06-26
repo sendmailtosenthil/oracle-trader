@@ -42,10 +42,12 @@ KEEP_MONTHS = int(os.environ.get("DOWNLOADER_KEEP_MONTHS", "2"))
 # single worker to cap memory. Tunable via env for the specific VPS.
 MIN_FREE_DISK_MB = float(os.environ.get("DOWNLOADER_MIN_FREE_DISK_MB", "2000"))
 MIN_RAM_MB = float(os.environ.get("DOWNLOADER_MIN_RAM_MB", "20"))
-# Worker count scales with available RAM: ~one worker per this many MB, capped at
-# MAX_CONCURRENCY. With 50 MB/worker this gives 200MB->4, 120MB->2, 75MB->1, and
-# anything below MIN_RAM_MB aborts. Per-worker memory is tiny (candles stream to
-# disk) and a swap file backs the host, so this budget is comfortable.
+# Dynamic concurrency (managed live in _download_contracts): start at 1 worker
+# and, each tick, ADD one when free RAM has headroom (>= RAM_FLOOR_MB +
+# RAM_PER_WORKER_MB) or SHED one when free RAM falls below RAM_FLOOR_MB — always
+# within [1, MAX_CONCURRENCY]. Per-worker memory is tiny (candles stream to disk)
+# and a swap file backs the host, so this stays responsive without OOM risk.
+RAM_FLOOR_MB = float(os.environ.get("DOWNLOADER_RAM_FLOOR_MB", "200"))
 RAM_PER_WORKER_MB = float(os.environ.get("DOWNLOADER_RAM_PER_WORKER_MB", "50"))
 
 INDEX_HEADER = "symbol,timestamp,open,high,low,close,volume"
@@ -163,12 +165,11 @@ def run_download(
 
         os.makedirs(DATA_ROOT, exist_ok=True)
 
-        # Resource guard: abort on critically low disk/RAM, degrade on low RAM.
+        # Resource guard: abort only on critically low disk/RAM. Concurrency is
+        # then scaled live by the dynamic controller in _download_contracts.
         workers = _preflight_guard(report)
         if workers is None:
             return report  # report.fatal set + alert emailed by the guard
-        if workers != MAX_CONCURRENCY:
-            emit(f"Resource guard: running with {workers} worker(s) to limit memory.")
 
         touched_folders = {}  # folder_name -> requires_upload(bool)
 
@@ -236,12 +237,19 @@ def _guard_email(subject, body):
         pass
 
 
-def _preflight_guard(report):
-    """Pre-run resource check. Returns the worker cap, or None to abort.
+def _available_ram():
+    from common.resources import available_ram_mb
+    return available_ram_mb()
 
-    Aborts (and emails) when free disk or available RAM is below the hard floor;
-    drops to a single worker (and emails) when RAM is merely low. A ``None`` RAM
-    reading (non-Linux/unknown) is treated as "don't block".
+
+def _preflight_guard(report):
+    """Pre-run resource check. Returns the worker ceiling, or None to abort.
+
+    Aborts only on a hard floor: free disk < MIN_FREE_DISK_MB, or available RAM <
+    MIN_RAM_MB. Both abort cases email an alert (the RAM email fires only here —
+    i.e. only when RAM is below 20 MB). Otherwise concurrency is managed live by
+    the dynamic controller in ``_download_contracts``, so this just returns the
+    ceiling.
     """
     disk, ram = _resource_snapshot()
     disk_txt = f"{disk:.0f} MB" if disk is not None else "n/a"
@@ -265,19 +273,7 @@ def _preflight_guard(report):
                      f"<p>Free disk: {disk_txt}.</p>")
         return None
 
-    if ram is None:
-        return MAX_CONCURRENCY  # unknown RAM (non-Linux) — don't throttle
-
-    # Scale workers with available RAM (~one per RAM_PER_WORKER_MB), capped.
-    workers = min(MAX_CONCURRENCY, max(1, int(ram // RAM_PER_WORKER_MB)))
-    if workers < MAX_CONCURRENCY:
-        note = (f"Low RAM ({ram_txt}) — running with {workers} worker"
-                f"{'s' if workers != 1 else ''} to limit memory.")
-        report.errors.append(note)
-        _guard_email("⚠️ Oracle Download degraded — low RAM",
-                     f"<h2>⚠️ Download running with reduced concurrency</h2><p>{note}</p>"
-                     f"<p>Free disk: {disk_txt}.</p>")
-    return workers
+    return MAX_CONCURRENCY
 
 
 def _download_day(client, task, d, date_str, vix_token, emit, max_workers=None):
@@ -325,7 +321,9 @@ def _download_day(client, task, d, date_str, vix_token, emit, max_workers=None):
     futures = client.filter_instruments(sym, instrument_type="FUT", min_expiry=d)
     try:
         emit(f"{sym} {date_str}: downloading {len(futures)} futures...")
-        rows, _, _ = _download_contracts(client, futures, frm, to, fut_file, max_workers=max_workers)
+        rows, _, _ = _download_contracts(client, futures, frm, to, fut_file,
+                                         max_workers=max_workers, emit=emit,
+                                         label=f"{sym} {date_str} futures")
         day.futures_status = "completed"
         if rows:
             day.files.append(_file_result(fut_file, rows))
@@ -342,7 +340,8 @@ def _download_day(client, task, d, date_str, vix_token, emit, max_workers=None):
     try:
         emit(f"{sym} {date_str}: downloading {len(options)} option contracts...")
         rows, ce, pe = _download_contracts(client, options, frm, to, opt_file,
-                                           atm_strike=day.atm_strike, max_workers=max_workers)
+                                           atm_strike=day.atm_strike, max_workers=max_workers,
+                                           emit=emit, label=f"{sym} {date_str} options")
         day.options_status = "completed"
         day.ce_rows = ce
         day.pe_rows = pe
@@ -356,15 +355,17 @@ def _download_day(client, task, d, date_str, vix_token, emit, max_workers=None):
     return day
 
 
-def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0, max_workers=None):
+def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0,
+                        max_workers=None, emit=None, label=None):
     """Download many contracts in parallel and stream them to one CSV.
 
-    Self-ramping worker pool with per-worker rate limiting (ported from
-    quant-downloader): starts with one worker and adds one every RAMP_STEP
-    processed contracts up to ``max_workers`` (defaults to MAX_CONCURRENCY),
-    each pausing PACE_SECONDS between requests. Each contract's rows are appended
-    to the file as soon as it is fetched (under a lock), so peak memory stays
-    bounded regardless of chain size. A fatal auth error stops every worker;
+    Concurrency is dynamic and memory-aware: it starts at a single worker and,
+    each ~0.2s tick, ADDS a worker when free RAM has headroom
+    (>= RAM_FLOOR_MB + RAM_PER_WORKER_MB) or SHEDS one when free RAM drops below
+    RAM_FLOOR_MB — always within [1, max_workers]. Each contract's rows stream to
+    disk as soon as it is fetched (under a lock), so peak memory stays bounded
+    regardless of chain size. Worker-count changes and progress are surfaced via
+    ``emit`` (UI only — never email). A fatal auth error stops every worker;
     per-contract failures are tolerated. Returns (rows, ce_atm_rows, pe_atm_rows).
     """
     if not instruments:
@@ -373,7 +374,8 @@ def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0, m
     cap = max_workers or MAX_CONCURRENCY
     lock = threading.Lock()  # guards state, counts, and file writes
     threads = []
-    state = {"index": 0, "processed": 0, "workers": 0, "concurrency": 1, "fatal": None}
+    # live = workers alive now; target = desired alive count (1..cap)
+    state = {"index": 0, "processed": 0, "live": 0, "target": 1, "fatal": None}
     counts = {"rows": 0, "ce": 0, "pe": 0}
     n = len(instruments)
 
@@ -384,16 +386,20 @@ def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0, m
         t = threading.Thread(target=worker, daemon=True)
         with lock:
             threads.append(t)
+            state["live"] += 1
         t.start()
 
     def worker():
-        with lock:
-            state["workers"] += 1
+        retired = False
         try:
             while True:
                 with lock:
                     if state["fatal"] is not None or state["index"] >= n:
                         break
+                    if state["live"] > state["target"]:  # over target -> retire
+                        state["live"] -= 1
+                        retired = True
+                        return
                     i = state["index"]
                     state["index"] += 1
                 instr = instruments[i]
@@ -428,32 +434,66 @@ def _download_contracts(client, instruments, frm, to, file_path, atm_strike=0, m
                 except Exception:
                     # Per-contract failures are tolerated (status reported upstream).
                     pass
-
-                ramp = False
                 with lock:
                     state["processed"] += 1
-                    if (state["processed"] % RAMP_STEP == 0
-                            and state["concurrency"] < cap):
-                        state["concurrency"] += 1
-                        ramp = True
-                if ramp:
-                    spawn_worker()
                 time.sleep(PACE_SECONDS)
         finally:
-            with lock:
-                state["workers"] -= 1
+            if not retired:
+                with lock:
+                    state["live"] -= 1
 
+    report_progress = bool(emit and label and n >= 20)
+    step = max(1, n // 20)  # ~20 progress updates over the run
+    last_emit = 0
+    last_target = None
+
+    spawn_worker()  # start with a single worker
     try:
-        spawn_worker()
-        # Wait for all (including dynamically-spawned) workers to drain.
+        # Main thread drives the dynamic controller + progress so Streamlit
+        # updates safely (workers never touch the UI).
         while True:
+            ram = _available_ram()
             with lock:
-                done = state["workers"] == 0 and (state["index"] >= n or state["fatal"] is not None)
+                target = state["target"]
+                processed = state["processed"]
+                work_left = state["index"] < n and state["fatal"] is None
+                if ram is not None and ram < RAM_FLOOR_MB:
+                    state["target"] = max(1, target - 1)                 # shed one
+                elif (work_left and target < cap
+                      and (ram is None or ram >= RAM_FLOOR_MB + RAM_PER_WORKER_MB)):
+                    state["target"] = target + 1                         # add one
+                target = state["target"]
+
+            # Spawn up to target while work remains.
+            while True:
+                with lock:
+                    need = (state["live"] < state["target"]
+                            and state["index"] < n and state["fatal"] is None)
+                if not need:
+                    break
+                spawn_worker()
+
+            if report_progress and target != last_target:
+                ram_txt = f"{ram:.0f} MB" if ram is not None else "n/a"
+                emit(f"{label}: scaled to {target} worker(s) (RAM {ram_txt})")
+                last_target = target
+            if report_progress and processed - last_emit >= step:
+                emit(f"{label}: {processed}/{n} completed ({n - processed} pending)")
+                last_emit = processed
+
+            with lock:
+                done = state["live"] == 0 and (state["index"] >= n or state["fatal"] is not None)
             if done:
                 break
             time.sleep(0.2)
+
         for t in threads:
             t.join()
+        if report_progress:
+            with lock:
+                processed = state["processed"]
+            if processed != last_emit:
+                emit(f"{label}: {processed}/{n} completed ({n - processed} pending)")
     finally:
         f.close()
 
