@@ -13,8 +13,17 @@ fi
 # to sys.path by default).
 export PYTHONPATH="$(pwd):${PYTHONPATH}"
 
-# Start the background bot daemon
-python -m bees.bot &
+# Scheduled jobs run via cron (see /etc/cron.d/oracle), not a resident daemon —
+# each fires a short-lived `python -m bees.bot <job>` so memory is freed after.
+# Cron doesn't inherit our environment, so snapshot it (shell-quoted) to a file
+# the job wrapper sources. Written to /etc (not the bind-mounted /app).
+printenv \
+    | grep -E '^(GMAIL_USER|GMAIL_PASS|DRIVE_|DOWNLOADER_|ZERODHA_|TZ|PATH|PYTHONPATH|LANG)=' \
+    | while IFS='=' read -r k v; do printf '%s=%q\n' "$k" "$v"; done > /etc/oracle.env
 
-# Start the Streamlit Web Application (top-level entry dispatches all modules)
+# Start the cron daemon (background)
+cron
+
+# Start the Streamlit Web Application in the foreground (keeps the container
+# alive; top-level app.py dispatches all modules).
 streamlit run app.py --server.port 8501 --server.address 0.0.0.0

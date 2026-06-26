@@ -4,7 +4,6 @@ pandas
 matplotlib
 pyxirr
 SQLAlchemy
-schedule
 plotly
 requests
 google-api-python-client

@@ -8,6 +8,7 @@ services:
     volumes:
       - .:/app
     environment:
+      - TZ=${TZ:-Asia/Kolkata}
       - GMAIL_USER=${GMAIL_USER}
       - GMAIL_PASS=${GMAIL_PASS}
       - ZERODHA_USER_ID=${ZERODHA_USER_ID:-PC8006}

@@ -1,0 +1,11 @@
+# Project Oracle scheduled jobs — cron runs inside the container.
+# Installed to /etc/cron.d/oracle. Times are IST (CRON_TZ). The job functions
+# also self-guard weekends, mirroring the previous daemon's behaviour.
+CRON_TZ=Asia/Kolkata
+SHELL=/bin/bash
+
+# m  h  dom mon dow  user  command
+35 15  *   *   *    root  bash /app/run-job.sh signals  > /proc/1/fd/1 2>/proc/1/fd/2
+40 15  *   *   *    root  bash /app/run-job.sh download > /proc/1/fd/1 2>/proc/1/fd/2
+0  16  *   *   *    root  bash /app/run-job.sh backup   > /proc/1/fd/1 2>/proc/1/fd/2
+30 8   *   *   *    root  bash /app/run-job.sh summary  > /proc/1/fd/1 2>/proc/1/fd/2
