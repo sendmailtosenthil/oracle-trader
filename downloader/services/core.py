@@ -42,7 +42,10 @@ KEEP_MONTHS = int(os.environ.get("DOWNLOADER_KEEP_MONTHS", "2"))
 # single worker to cap memory. Tunable via env for the specific VPS.
 MIN_FREE_DISK_MB = float(os.environ.get("DOWNLOADER_MIN_FREE_DISK_MB", "2000"))
 MIN_RAM_MB = float(os.environ.get("DOWNLOADER_MIN_RAM_MB", "20"))
-LOW_RAM_MB = float(os.environ.get("DOWNLOADER_LOW_RAM_MB", "700"))
+# Below this available-RAM mark we drop to a single worker. Kept low because a
+# swap file backs the host and the streamed-to-disk writes keep per-worker
+# memory tiny — so the full worker pool is safe with only a few hundred MB free.
+LOW_RAM_MB = float(os.environ.get("DOWNLOADER_LOW_RAM_MB", "150"))
 
 INDEX_HEADER = "symbol,timestamp,open,high,low,close,volume"
 CONTRACT_HEADER = "symbol,expiry,strike,type,timestamp,open,high,low,close,volume,oi"
