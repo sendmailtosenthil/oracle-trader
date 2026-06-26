@@ -21,6 +21,7 @@ import json
 import os
 
 import pytz
+import requests
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -545,35 +546,56 @@ def download_official_nifty500(timeout=30):
     return None, None
 
 
-def fetch_delivery_bhavcopy(d, timeout=30):
+def make_nse_session():
+    """A requests session primed with NSE cookies (the archive CSVs need them).
+    Reuse ONE session across many bhavcopy fetches to stay gentle on NSE."""
+    import time as _time
+    s = requests.Session()
+    s.headers.update(_NSE_HEADERS)
+    try:
+        s.get("https://www.nseindia.com", timeout=10)   # 403 is fine — sets cookies
+    except Exception:
+        pass
+    _time.sleep(1.0)   # let the cookie settle before hitting the archive
+    return s
+
+
+def fetch_delivery_bhavcopy(d, timeout=30, session=None):
     """Download NSE's one-per-day security bhavcopy for date ``d`` and return
     ``{nse_symbol: delivery_pct}`` for EQ series. Streamed line-by-line (low RAM).
-    Returns None if the file isn't available (weekend/holiday/not-yet-published)."""
+    Returns None if the file isn't available (weekend/holiday/not-yet-published).
+
+    Pass a shared ``session`` (from ``make_nse_session``) when fetching many days
+    so cookies are primed once; otherwise a session is primed per call.
+    """
     import codecs
+    import time as _time
+    s = session or make_nse_session()
     ddmmyyyy = d.strftime("%d%m%Y")
     urls = [
         f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv",
         f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv",
     ]
     for url in urls:
-        try:
-            s = requests.Session()
-            s.headers.update(_NSE_HEADERS)
+        for attempt in range(3):
             try:
-                s.get("https://www.nseindia.com", timeout=10)
+                r = s.get(url, timeout=timeout, stream=True)
             except Exception:
-                pass
-            r = s.get(url, timeout=timeout, stream=True)
+                _time.sleep(2 * (attempt + 1))
+                continue
+            if r.status_code == 404:
+                break   # no file for this date on this mirror — try the next mirror
             if r.status_code != 200:
+                _time.sleep(2 * (attempt + 1))   # throttled — back off and retry
                 continue
             reader = csv.reader(codecs.iterdecode(r.iter_lines(), "utf-8"))
             header = next(reader, None)
             if not header:
-                continue
+                break
             cols = {h.strip(): i for i, h in enumerate(header)}
             i_sym, i_ser, i_dlv = cols.get("SYMBOL"), cols.get("SERIES"), cols.get("DELIV_PER")
             if i_sym is None or i_ser is None or i_dlv is None:
-                continue
+                break
             out = {}
             for row in reader:
                 if len(row) <= max(i_sym, i_ser, i_dlv):
@@ -584,10 +606,7 @@ def fetch_delivery_bhavcopy(d, timeout=30):
                     out[row[i_sym].strip().upper()] = float(row[i_dlv].strip())
                 except ValueError:
                     continue  # '-' for series without delivery
-            if out:
-                return out
-        except Exception:  # noqa: BLE001
-            continue
+            return out or None
     return None
 
 
@@ -595,11 +614,12 @@ def fetch_latest_delivery(max_back=6):
     """Fetch the most recent available delivery bhavcopy, trying today back
     ``max_back`` calendar days. Returns ``(iso_date, {symbol: pct})`` or (None, None)."""
     today = datetime.date.today()
+    s = make_nse_session()
     for back in range(max_back + 1):
         d = today - datetime.timedelta(days=back)
         if d.weekday() >= 5:
             continue
-        data = fetch_delivery_bhavcopy(d)
+        data = fetch_delivery_bhavcopy(d, session=s)
         if data:
             return d.isoformat(), data
     return None, None
