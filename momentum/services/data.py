@@ -545,6 +545,66 @@ def download_official_nifty500(timeout=30):
     return None, None
 
 
+def fetch_delivery_bhavcopy(d, timeout=30):
+    """Download NSE's one-per-day security bhavcopy for date ``d`` and return
+    ``{nse_symbol: delivery_pct}`` for EQ series. Streamed line-by-line (low RAM).
+    Returns None if the file isn't available (weekend/holiday/not-yet-published)."""
+    import codecs
+    ddmmyyyy = d.strftime("%d%m%Y")
+    urls = [
+        f"https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv",
+        f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv",
+    ]
+    for url in urls:
+        try:
+            s = requests.Session()
+            s.headers.update(_NSE_HEADERS)
+            try:
+                s.get("https://www.nseindia.com", timeout=10)
+            except Exception:
+                pass
+            r = s.get(url, timeout=timeout, stream=True)
+            if r.status_code != 200:
+                continue
+            reader = csv.reader(codecs.iterdecode(r.iter_lines(), "utf-8"))
+            header = next(reader, None)
+            if not header:
+                continue
+            cols = {h.strip(): i for i, h in enumerate(header)}
+            i_sym, i_ser, i_dlv = cols.get("SYMBOL"), cols.get("SERIES"), cols.get("DELIV_PER")
+            if i_sym is None or i_ser is None or i_dlv is None:
+                continue
+            out = {}
+            for row in reader:
+                if len(row) <= max(i_sym, i_ser, i_dlv):
+                    continue
+                if row[i_ser].strip() != "EQ":
+                    continue
+                try:
+                    out[row[i_sym].strip().upper()] = float(row[i_dlv].strip())
+                except ValueError:
+                    continue  # '-' for series without delivery
+            if out:
+                return out
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def fetch_latest_delivery(max_back=6):
+    """Fetch the most recent available delivery bhavcopy, trying today back
+    ``max_back`` calendar days. Returns ``(iso_date, {symbol: pct})`` or (None, None)."""
+    today = datetime.date.today()
+    for back in range(max_back + 1):
+        d = today - datetime.timedelta(days=back)
+        if d.weekday() >= 5:
+            continue
+        data = fetch_delivery_bhavcopy(d)
+        if data:
+            return d.isoformat(), data
+    return None, None
+
+
 def fetch_official_constituents(effective_date=None, timeout=30):
     """Download + cache the official list as ``<reconstitution-date>.csv``.
 

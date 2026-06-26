@@ -68,6 +68,17 @@ class BrokerConfig(Base):
     user_id = Column(String, nullable=False, default='PC8006')
     enctoken = Column(String, nullable=False)
 
+class MomentumDelivery(Base):
+    # Daily NSE delivery % per stock (from the one-per-day security bhavcopy).
+    # Accumulates over time; the delivery scoring model uses the latest value.
+    __tablename__ = 'momentum_delivery'
+    __table_args__ = (UniqueConstraint('date', 'symbol', name='uq_momentum_delivery_date_symbol'),)
+    id = Column(Integer, primary_key=True)
+    date = Column(String, nullable=False)        # ISO trade date
+    symbol = Column(String, nullable=False)      # NSE symbol (no .NS)
+    deliv_pct = Column(Float, nullable=True)      # delivery % (0–100)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 class DownloadJob(Base):
     __tablename__ = 'download_jobs'
     id = Column(Integer, primary_key=True)

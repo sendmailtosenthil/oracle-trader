@@ -209,13 +209,14 @@ def _render_plan(db, cfg):
 
 
 # --------------------------------------------------------------------------
-def _do_refresh(db, broker, fetch_syms, from_date, prune_to=None):
+def _do_refresh(db, broker, fetch_syms, from_date, prune_to=None, with_delivery=False):
     """Run a price refresh from ``from_date`` → today, recompute + persist the
     ranking to the DB, store the summary, and rerun.
 
     ``prune_to`` (a symbol set) trims the cache to exactly that set after fetching;
     pass it for a full build (drop stale leftovers). Leave it None for a light
     top-N refresh, which must NOT delete the rest of the universe's history.
+    ``with_delivery`` fetches the one-per-day NSE delivery bhavcopy (settled data).
     """
     log_box = st.empty()
     msgs = []
@@ -232,6 +233,12 @@ def _do_refresh(db, broker, fetch_syms, from_date, prune_to=None):
     if not result["fatal"]:
         if prune_to is not None:
             result["pruned"] = mdata.prune_cache(prune_to)
+        if with_delivery:
+            with st.spinner("Fetching NSE delivery % (one bhavcopy)…"):
+                try:
+                    result["delivery"] = strategy.refresh_delivery(db)
+                except Exception as exc:  # noqa: BLE001
+                    result["delivery"] = {"ok": False, "error": str(exc)}
         with st.spinner("Re-ranking…"):
             strategy.compute_ranking(db)   # streams prices, persists ranking to DB
     st.session_state["mom_refresh_result"] = result
@@ -254,6 +261,12 @@ def _render_refresh(db, cfg):
             extra = f" · pruned {pruned} stale symbol(s)" if pruned else ""
             st.success(f"Updated {last['updated']} symbol(s), skipped {last['skipped']} "
                        f"· prices as of **{ts}**{extra}.")
+            dlv = last.get("delivery")
+            if dlv and dlv.get("ok"):
+                st.caption(f"Delivery %: {dlv['count']} stocks for {dlv['date']}"
+                           + (" (already stored)" if dlv.get("skipped") else " (fetched)") + ".")
+            elif dlv and not dlv.get("ok"):
+                st.caption(f"⚠️ Delivery bhavcopy not fetched: {dlv.get('error')}")
             if last["errors"]:
                 with st.expander(f"{len(last['errors'])} warning(s)"):
                     st.write("\n".join(last["errors"][:50]))
@@ -338,7 +351,8 @@ def _render_refresh(db, cfg):
                        "(current Nifty 500 + holdings) on settled closes, re-ranks, and "
                        "prunes stale names. Use this for the accurate end-of-day ranking.")
             if st.button("🔄 Refresh now (full 500 — settled closes)", type="primary"):
-                _do_refresh(db, broker, full_syms, from_date, prune_to=set(full_syms))
+                _do_refresh(db, broker, full_syms, from_date, prune_to=set(full_syms),
+                            with_delivery=True)
     else:
         st.warning("⚠️ Ranking can't be computed yet — the current Nifty 500 names "
                    "lack the ~1-year of daily history the lookback needs.")
@@ -359,7 +373,8 @@ def _render_refresh(db, cfg):
             help="Start date for the historical daily candles (end is always today).",
         )
         if st.button("⬇️ Fetch full history from Zerodha"):
-            _do_refresh(db, broker, full_syms, history_from, prune_to=set(full_syms))
+            _do_refresh(db, broker, full_syms, history_from, prune_to=set(full_syms),
+                        with_delivery=True)
 
 
 # --------------------------------------------------------------------------
@@ -369,6 +384,7 @@ def _render_config(db, cfg):
         "risk_adjusted": "Risk-adjusted (blended return ÷ daily volatility)",
         "clenow": "Clenow trend (annualised log-slope × R² — smooth, continuous)",
         "obv": "OBV-confirmed (momentum + on-balance-volume accumulation)",
+        "delivery": "Delivery-confirmed (momentum + NSE delivery % — real buying)",
     }
     with st.form("momentum_config"):
         model_keys = list(_MODELS.keys())

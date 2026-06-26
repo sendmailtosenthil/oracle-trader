@@ -14,9 +14,36 @@ latest bar. Holdings and cash are derived from the append-only
 import json
 
 from common.database import (
-    MomentumConfig, MomentumHolding, MomentumTrade, MomentumRanking,
+    MomentumConfig, MomentumHolding, MomentumTrade, MomentumRanking, MomentumDelivery,
 )
 from momentum.services import data as mdata
+
+
+def refresh_delivery(db):
+    """Fetch the latest NSE delivery bhavcopy (one file) and upsert delivery %
+    per symbol. Idempotent: if the most recent available date is already stored,
+    no network call repeats it. Returns a summary dict."""
+    from sqlalchemy import func
+    iso, data = mdata.fetch_latest_delivery()
+    if not data:
+        return {"ok": False, "date": None, "count": 0, "error": "No delivery bhavcopy available."}
+    have = db.query(MomentumDelivery).filter(MomentumDelivery.date == iso).count()
+    if have:
+        return {"ok": True, "date": iso, "count": have, "skipped": True}
+    for sym, pct in data.items():
+        db.add(MomentumDelivery(date=iso, symbol=sym, deliv_pct=pct))
+    db.commit()
+    return {"ok": True, "date": iso, "count": len(data), "skipped": False}
+
+
+def delivery_map(db):
+    """``{SYMBOL.NS: delivery_pct}`` from the most recent stored delivery date."""
+    from sqlalchemy import func
+    latest = db.query(func.max(MomentumDelivery.date)).scalar()
+    if not latest:
+        return {}
+    rows = db.query(MomentumDelivery).filter(MomentumDelivery.date == latest).all()
+    return {mdata.to_yahoo(r.symbol): r.deliv_pct for r in rows if r.deliv_pct is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -123,12 +150,14 @@ def obv_slope_norm(closes, volumes):
 # ---------------------------------------------------------------------------
 # Scoring / ranking (port of weighted-momentum.js)
 # ---------------------------------------------------------------------------
-def score_universe(price_book, calendar, candidates, as_of, cfg):
+def score_universe(price_book, calendar, candidates, as_of, cfg, delivery=None):
     """Score & rank ``candidates`` as of ``as_of``. Returns (ranked, excluded).
 
     ``ranked`` is a list of dicts sorted best-first with a 1-based ``rank``;
-    ``excluded`` is a list of ``{symbol, reason}``.
+    ``excluded`` is a list of ``{symbol, reason}``. ``delivery`` is an optional
+    ``{symbol.NS: delivery_pct}`` map used by the ``delivery`` model.
     """
+    delivery = delivery or {}
     facs = factors(cfg)
     w_sum = sum(f["weight"] for f in facs) or 1.0
     min_cov = cfg.min_history_coverage or 0.8
@@ -191,6 +220,9 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
                 continue
             row["obv"] = osn
             row["value"] = blended  # placeholder; finalised by z-combine below
+        elif model == "delivery":
+            row["deliv"] = delivery.get(sym)   # may be None (no bhavcopy yet)
+            row["value"] = blended  # placeholder; finalised by z-combine below
         else:  # risk_adjusted (default)
             if vol_enabled:
                 if not vol or vol <= 0:
@@ -201,17 +233,22 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
                 row["value"] = blended
         ranked.append(row)
 
-    # OBV model: combine standardised momentum + standardised accumulation across
-    # the cross-section (momentum-led, volume-confirmed).
-    if model == "obv" and ranked:
+    # Accumulation models: combine standardised momentum + standardised
+    # accumulation across the cross-section (momentum-led, volume/delivery-confirmed).
+    if model in ("obv", "delivery") and ranked:
         def _z(key):
-            vals = [r[key] for r in ranked]
+            vals = [r[key] for r in ranked if r.get(key) is not None]
+            if not vals:
+                return {id(r): 0.0 for r in ranked}
             mu = sum(vals) / len(vals)
             sd = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5 or 1.0
-            return {id(r): (r[key] - mu) / sd for r in ranked}
-        zb, zo = _z("blended"), _z("obv")
+            # Missing accumulation data → neutral (z = 0), so the stock ranks on momentum.
+            return {id(r): ((r[key] - mu) / sd if r.get(key) is not None else 0.0)
+                    for r in ranked}
+        zb = _z("blended")
+        zacc = _z("obv") if model == "obv" else _z("deliv")
         for r in ranked:
-            r["value"] = 0.6 * zb[id(r)] + 0.4 * zo[id(r)]
+            r["value"] = 0.6 * zb[id(r)] + 0.4 * zacc[id(r)]
 
     # Primary rank: model score (value). Also assign a raw-momentum rank
     # (by blended return only) so the UI can show both orderings side by side.
@@ -223,7 +260,7 @@ def score_universe(price_book, calendar, candidates, as_of, cfg):
     return ranked, excluded
 
 
-def rank_universe(price_book, calendar, cfg, as_of=None):
+def rank_universe(price_book, calendar, cfg, as_of=None, delivery=None):
     """Score the point-in-time Nifty 500 universe — the single ranking entry point.
 
     Builds candidates from the membership snapshot effective on ``as_of`` (latest
@@ -237,7 +274,7 @@ def rank_universe(price_book, calendar, cfg, as_of=None):
                 "n_universe": 0}
     member = mdata.Universe.load().as_of(as_of)
     candidates = [mdata.to_yahoo(s) for s in member["symbols"]] or price_book.symbols()
-    ranked, excluded = score_universe(price_book, calendar, candidates, as_of, cfg)
+    ranked, excluded = score_universe(price_book, calendar, candidates, as_of, cfg, delivery=delivery)
     return {"as_of": as_of, "ranked": ranked, "excluded": excluded,
             "snapshot_date": member["snapshot_date"], "n_universe": len(candidates)}
 
@@ -253,7 +290,8 @@ def compute_ranking(db, as_of=None, persist=True):
     if not dates:
         return {"as_of": None, "ranked": [], "excluded": [], "snapshot_date": None,
                 "n_universe": 0, "error": "No cached price data found."}
-    result = rank_universe(mdata.LazyPriceBook(), mdata.Calendar(dates), cfg, as_of)
+    deliv = delivery_map(db) if (cfg.scoring_model == "delivery") else None
+    result = rank_universe(mdata.LazyPriceBook(), mdata.Calendar(dates), cfg, as_of, delivery=deliv)
     if persist and result["ranked"]:
         _persist_ranking(db, result["as_of"], result["ranked"])
     return result
