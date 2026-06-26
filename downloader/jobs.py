@@ -75,18 +75,34 @@ def run_daily_download():
     send_email(core.report_html(report), subject)
 
 
+def _has_active_download(db, stale_after_hours=2):
+    """True if a download is genuinely in progress.
+
+    A run interrupted by a restart can leave a ``running`` row forever; treat
+    rows older than ``stale_after_hours`` as stale and auto-fail them so they
+    don't block backups indefinitely.
+    """
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=stale_after_hours)
+    running = db.query(DownloadJob).filter(DownloadJob.status == 'running').all()
+    active = False
+    for j in running:
+        if j.created_at and j.created_at < cutoff:
+            j.status = 'failed'
+            j.message = (j.message or '') + ' [auto-failed: stale running job]'
+        else:
+            active = True
+    db.commit()
+    return active
+
+
 def run_db_backup():
     """Back up the DB to Drive (keep last 3) — only when there is no activity.
 
-    Skips if a download job is still ``running`` so we never snapshot mid-write.
+    Skips if a download job is genuinely running so we never snapshot mid-write.
     """
     now_ist = datetime.datetime.now(IST)
     db = next(get_db())
-    active = (
-        db.query(DownloadJob)
-        .filter(DownloadJob.status == 'running')
-        .first()
-    )
+    active = _has_active_download(db)
     db.close()
     if active:
         print("DB backup skipped: a download job is still running (activity in progress).")
