@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from common.timez import today_ist
 from common.zerodha_client import (
     ZerodhaClient,
     FatalAuthError,
@@ -130,7 +131,7 @@ def run_download(
     persisted per (date, symbol). Email is NOT sent here — the caller decides
     (render with ``report_html`` and send via ``common.notifications.send_email``).
     """
-    today = datetime.date.today()
+    today = today_ist()
     start_date = start_date or today
     end_date = end_date or today
     tasks = [t for t in TASKS if not symbols or t["symbol"] in symbols]

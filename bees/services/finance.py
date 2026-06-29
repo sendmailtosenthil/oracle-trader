@@ -4,6 +4,7 @@ import datetime
 from pyxirr import xirr
 
 from common.database import CashFlow, Trade
+from common.timez import today_ist
 
 
 def total_charges(db, strategy_id):
@@ -32,7 +33,7 @@ def calculate_xirr(db, strategy_id, current_value):
             dates.append(t.date.date())
             amounts.append(-t.charges)
 
-    dates.append(datetime.datetime.today().date())
+    dates.append(today_ist())
     amounts.append(current_value)
 
     try:

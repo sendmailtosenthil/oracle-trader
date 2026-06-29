@@ -27,7 +27,7 @@ from momentum.services import data as mdata
 def main(days_back=90, pace=3.0):
     database.init_db("sqlite:///oracle.db")
     db = next(database.get_db())
-    today = datetime.date.today()
+    today = datetime.datetime.now(mdata.IST).date()
     session = mdata.make_nse_session()   # prime cookies ONCE, reuse for all days
 
     fetched = skipped = nofile = errors = 0

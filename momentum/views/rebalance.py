@@ -59,7 +59,7 @@ def _render_plan(db, cfg):
         try:
             last_d = datetime.date.fromisoformat(last_trade[0])
             due_d = last_d + datetime.timedelta(days=int(cfg.rebalance_days))
-            today = datetime.date.today()
+            today = datetime.datetime.now(mdata.IST).date()
             if today >= due_d:
                 st.warning(f"🗓️ Rebalance **due** — last was {last_d} ({(today - last_d).days}d ago); "
                            f"cadence is every {cfg.rebalance_days}d.")
@@ -322,7 +322,7 @@ def _render_refresh(db, cfg):
         return
     st.success("Zerodha token is valid.")
 
-    today = datetime.date.today()
+    today = datetime.datetime.now(mdata.IST).date()
     full_start = today - datetime.timedelta(days=455)
 
     # Full universe set: current Nifty 500 ∪ holdings — used by the one-time build.

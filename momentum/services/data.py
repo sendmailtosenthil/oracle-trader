@@ -466,7 +466,7 @@ class Universe:
 
 def latest_reconstitution(today=None):
     """Most recent Nifty 500 reconstitution date (end of Mar / Sep) on/before today."""
-    today = today or datetime.date.today()
+    today = today or datetime.datetime.now(IST).date()
     mar = datetime.date(today.year, 3, 31)
     sep = datetime.date(today.year, 9, 30)
     if today >= sep:
@@ -613,7 +613,7 @@ def fetch_delivery_bhavcopy(d, timeout=30, session=None):
 def fetch_latest_delivery(max_back=6):
     """Fetch the most recent available delivery bhavcopy, trying today back
     ``max_back`` calendar days. Returns ``(iso_date, {symbol: pct})`` or (None, None)."""
-    today = datetime.date.today()
+    today = datetime.datetime.now(IST).date()
     s = make_nse_session()
     for back in range(max_back + 1):
         d = today - datetime.timedelta(days=back)
@@ -711,7 +711,7 @@ def refresh_prices(enctoken, user_id="PC8006", symbols=None, history_from="2024-
 
         frm = datetime.datetime.combine(datetime.date.fromisoformat(history_from),
                                         datetime.time(9, 15))
-        to = datetime.datetime.combine(datetime.date.today(), datetime.time(15, 30))
+        to = datetime.datetime.combine(datetime.datetime.now(IST).date(), datetime.time(15, 30))
         # Single IST timestamp for this whole refresh run (when prices were pulled).
         fetched_ts = datetime.datetime.now(IST).isoformat(timespec="seconds")
         result["fetched_at"] = fetched_ts

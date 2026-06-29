@@ -7,6 +7,7 @@ import streamlit as st
 from common.database import BrokerConfig, DownloadJob, DownloadStat
 from common.broker import is_zerodha_token_valid
 from common.notifications import send_email
+from common.timez import today_ist, to_ist
 from downloader.services import core
 
 
@@ -25,7 +26,7 @@ def render(db):
     st.success("Zerodha token is valid.")
 
     with st.form(key="download_form"):
-        today = datetime.date.today()
+        today = today_ist()
         default_start = today - datetime.timedelta(days=7)
         col1, col2 = st.columns(2)
         start_date = col1.date_input("Start date", value=default_start)
@@ -135,7 +136,7 @@ def _render_history(db):
     if jobs:
         st.caption("Recent jobs")
         jdf = pd.DataFrame([{
-            "Created": j.created_at.strftime("%Y-%m-%d %H:%M") if j.created_at else "",
+            "Created": to_ist(j.created_at).strftime("%Y-%m-%d %H:%M") if j.created_at else "",
             "Type": j.job_type, "Range": f"{j.start_date}..{j.end_date}",
             "Symbols": j.symbols, "Status": j.status, "Message": j.message,
         } for j in jobs])

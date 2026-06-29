@@ -10,6 +10,8 @@ import os
 import sqlite3
 import tempfile
 
+from common.timez import today_ist
+
 DEFAULT_DB_PATH = os.environ.get("ORACLE_DB_PATH", "oracle.db")
 DRIVE_ROOT_FOLDER = os.environ.get("DRIVE_ROOT_FOLDER", "QuantData")
 BACKUP_FOLDER = os.environ.get("DRIVE_DB_BACKUP_FOLDER", "db-backups")
@@ -22,7 +24,7 @@ def backup_db_to_drive(db_path=None, keep=3, date_str=None):
     ``status`` is ``uploaded`` / ``skipped`` / ``failed``.
     """
     db_path = db_path or DEFAULT_DB_PATH
-    date_str = date_str or datetime.date.today().isoformat()
+    date_str = date_str or today_ist().isoformat()
     result = {"status": "skipped", "file": None, "kept": [], "deleted": [], "error": ""}
 
     if not os.path.exists(db_path):

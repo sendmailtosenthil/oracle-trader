@@ -2,6 +2,8 @@ import yfinance as yf
 import pandas as pd
 import datetime
 
+from common.timez import now_ist
+
 def clean_indian_etf_data(series):
     adj = series.copy()
     for i in range(1, len(adj) - 5):
@@ -25,7 +27,7 @@ def clean_indian_etf_data(series):
     return adj
 
 def get_clean_daily_close(ticker, window):
-    end_date_dt = datetime.datetime.today()
+    end_date_dt = now_ist()
     start_date_dt = end_date_dt - datetime.timedelta(days=window * 2 + 30)
     
     end_date = end_date_dt.strftime("%Y-%m-%d")

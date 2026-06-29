@@ -38,7 +38,7 @@ def main(days_back=455):
     current = {mdata.to_yahoo(s) for s in mdata.Universe.load().latest()}
     held = {h.symbol for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all()}
     syms = sorted(current | held)
-    start = (datetime.date.today() - datetime.timedelta(days=days_back)).isoformat()
+    start = (datetime.datetime.now(mdata.IST).date() - datetime.timedelta(days=days_back)).isoformat()
 
     print(f"Fetching {len(syms)} symbols (current Nifty 500 + holdings) from {start} → today...")
     result = mdata.refresh_prices(

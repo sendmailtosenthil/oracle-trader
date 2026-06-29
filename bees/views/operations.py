@@ -4,6 +4,7 @@ import datetime
 import streamlit as st
 
 from common.database import Strategy, CashFlow, PendingSwitch, Trade, recalculate_portfolio_from_ledger
+from common.timez import today_ist
 from bees.services.charges import reconcile_strategy_charges
 
 
@@ -47,7 +48,7 @@ def _render_batch_switches(db):
             st.markdown("---")
             st.write("**Log a Fractional Batch Execution:**")
             with st.form(key=f"batch_form_{switch.id}"):
-                exec_date = st.date_input("Execution Date", value=datetime.date.today())
+                exec_date = st.date_input("Execution Date", value=today_ist())
                 units_sold = st.number_input(f"Units of {from_ticker} Sold", max_value=float(remaining), value=0.0, step=1.0)
                 sell_price = st.number_input(f"Selling Price per unit ({from_ticker})", min_value=0.0, step=0.01)
                 units_bought = st.number_input(f"Units of {to_ticker} Bought", min_value=0.0, step=1.0)
@@ -90,7 +91,7 @@ def _render_sip(db, strategies):
     target_strat = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_sip")
     strat = next(s for s in strategies if s.name == target_strat)
     with st.form(key="sip_form"):
-        sip_date = st.date_input("Investment Date", value=datetime.date.today())
+        sip_date = st.date_input("Investment Date", value=today_ist())
 
         col1, col2 = st.columns(2)
         with col1:
@@ -131,7 +132,7 @@ def _render_manual_override(db, strategies):
 
     target_strat_man = st.selectbox("Select Strategy", [s.name for s in strategies], key="strat_override")
     with st.form(key="manual_override_form"):
-        override_date = st.date_input("Trade Date", value=datetime.date.today())
+        override_date = st.date_input("Trade Date", value=today_ist())
 
         strat_man = next(s for s in strategies if s.name == target_strat_man)
 
@@ -196,7 +197,7 @@ def _render_swp(db, strategies):
     asset_to_sell = st.selectbox("Asset to Sell", [strat_swp.asset1, strat_swp.asset2], key="asset_swp")
 
     with st.form(key="swp_form"):
-        swp_date = st.date_input("Withdrawal Date", value=datetime.date.today(), key="swp_date")
+        swp_date = st.date_input("Withdrawal Date", value=today_ist(), key="swp_date")
 
         col1, col2 = st.columns(2)
         with col1:
