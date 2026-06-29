@@ -64,10 +64,21 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now oracle-web.service
 
-# 5) cron for the scheduled jobs (current user, IST) --------------------------
+# 5) system timezone -> IST ---------------------------------------------------
+# Ubuntu's stock cron does NOT honour the `CRON_TZ` setting — it silently treats
+# it as a plain env var and schedules in system-local time. On a UTC box that
+# runs every job 5.5h late. The market is IST-only, so put the whole box on IST;
+# cron's system-local time is then IST and the crontab times below are literal.
+# (App logic is unaffected — it uses explicit datetime.now(IST) regardless.)
+echo "==> Setting system timezone to Asia/Kolkata (sudo)..."
+sudo timedatectl set-timezone Asia/Kolkata
+
+# 6) cron for the scheduled jobs (system-local time is now IST) ----------------
 echo "==> Installing crontab for $RUN_USER..."
 chmod +x "$WRAP"
 mkdir -p "$APP_DIR/logs"
+# CRON_TZ is kept as documentation of intent; the real guarantee is the system
+# timezone set above (Ubuntu cron ignores CRON_TZ).
 CRON_BLOCK=$(cat <<CRON
 # >>> oracle jobs (managed by deploy/setup.sh) >>>
 CRON_TZ=Asia/Kolkata
@@ -80,8 +91,12 @@ CRON
 )
 { crontab -l 2>/dev/null | sed '/# >>> oracle jobs/,/# <<< oracle jobs/d' || true; echo "$CRON_BLOCK"; } | crontab -
 
+# cron caches the timezone; restart it so the IST switch takes effect now.
+sudo systemctl restart cron
+
 echo ""
 echo "==> Done."
 echo "    Web app : http://<vps-ip>:$PORT   (systemctl status oracle-web)"
 echo "    Web logs: journalctl -u oracle-web -f"
 echo "    Jobs    : crontab -l        | job logs: $APP_DIR/logs/cron.log"
+echo "    Timezone: $(timedatectl show -p Timezone --value 2>/dev/null || echo '?')  (jobs run in this zone)"

@@ -14,6 +14,7 @@ bash deploy/setup.sh          # run again: installs service + cron, starts the a
 
 ## What it installs
 - **systemd service `oracle-web`** — the Streamlit app on port 8501, `Restart=always`, starts on boot.
+- **System timezone set to `Asia/Kolkata`** — Ubuntu's cron ignores `CRON_TZ`, so the box itself is put on IST and cron's system-local time *is* IST. Without this, jobs run in UTC (5.5h late). App logic is unaffected (it uses explicit `datetime.now(IST)`).
 - **User crontab** — the four jobs in IST: `signals` 15:35, `download` 15:40, `backup` 16:00, `summary` 08:30. Each runs `python -m bees.bot <job>` from the venv and exits.
 
 ## Day-to-day
