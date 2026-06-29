@@ -8,6 +8,7 @@ cron *inside the container* as ``python -m bees.bot <job>`` (see
   summary   - daily portfolio summary email
   download  - daily market-data download (delegates to downloader.jobs)
   backup    - daily DB backup to Drive (delegates to downloader.jobs)
+  momentum  - daily momentum advisory email (delegates to momentum.jobs)
 """
 import datetime
 import sys
@@ -18,6 +19,7 @@ from common.database import Strategy, PendingSwitch, Portfolio, CashFlow, init_d
 from common.notifications import send_email
 from bees.donchian import evaluate_donchian_intraday
 from downloader.jobs import run_daily_download, run_db_backup
+from momentum.jobs import run_daily_momentum_advisory
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -155,6 +157,7 @@ JOBS = {
     "summary": send_daily_summary,
     "download": run_daily_download,
     "backup": run_db_backup,
+    "momentum": run_daily_momentum_advisory,
 }
 
 

@@ -85,6 +85,7 @@ CRON_TZ=Asia/Kolkata
 35 15 * * * $WRAP signals  >> $APP_DIR/logs/cron.log 2>&1
 40 15 * * * $WRAP download >> $APP_DIR/logs/cron.log 2>&1
 0 16 * * *  $WRAP backup   >> $APP_DIR/logs/cron.log 2>&1
+0 17 * * 1-5 $WRAP momentum >> $APP_DIR/logs/cron.log 2>&1
 30 8 * * *  $WRAP summary   >> $APP_DIR/logs/cron.log 2>&1
 # <<< oracle jobs <<<
 CRON
