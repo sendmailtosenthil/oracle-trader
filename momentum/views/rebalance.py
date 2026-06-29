@@ -427,8 +427,21 @@ def _render_config(db, cfg):
                                      value=float(cfg.investment), step=1000.0)
         num_stocks = c2.number_input("Number of stocks", min_value=1, max_value=50,
                                      value=int(cfg.num_stocks), step=1)
+        _EXITS = {"trailing": "Trailing — sell when rank slips past (best rank since entry) + gap",
+                  "fixed": "Fixed — sell when rank > threshold"}
+        cur_exit = getattr(cfg, "exit_mode", "trailing")
+        cur_exit = cur_exit if cur_exit in _EXITS else "trailing"
+        ex1, ex2 = st.columns(2)
+        exit_mode = ex1.selectbox(
+            "Exit rule", list(_EXITS.keys()), index=list(_EXITS.keys()).index(cur_exit),
+            format_func=lambda k: _EXITS[k],
+            help="Trailing locks in winners: a name bought at rank 10 that climbs to rank 3 is "
+                 "only sold once it falls past 3 + gap, not at a fixed rank.")
+        trail_gap = ex2.number_input("Trailing gap (ranks past best)", min_value=1, max_value=200,
+                                     value=int(getattr(cfg, "trail_gap", 25)), step=5,
+                                     help="Used by the trailing exit rule.")
         c3, c4 = st.columns(2)
-        threshold = c3.number_input("Replace when rank >", min_value=1, max_value=500,
+        threshold = c3.number_input("Replace when rank > (fixed mode)", min_value=1, max_value=500,
                                     value=int(cfg.replace_rank_threshold), step=5)
         reinvest = c4.checkbox("Reinvest idle cash on rebalance",
                                value=bool(cfg.reinvest_idle_cash))
@@ -457,6 +470,8 @@ def _render_config(db, cfg):
         cfg.clenow_days = int(clenow_days)
         cfg.rebalance_days = int(rebalance_days)
         cfg.replace_rank_threshold = int(threshold)
+        cfg.exit_mode = exit_mode
+        cfg.trail_gap = int(trail_gap)
         cfg.reinvest_idle_cash = bool(reinvest)
         cfg.vol_enabled = bool(vol_enabled)
         cfg.vol_months = int(vol_months)

@@ -60,6 +60,7 @@ def render(db):
         st.subheader(f"Holdings ({pv['n_holdings']})")
         hdf = pd.DataFrame([{
             "Entry rank": h["entry_rank"],
+            "Best rank": h.get("best_rank"),
             "Today rank (vol-adj)": h["rank"] if h["rank"] is not None else None,
             "Today rank (raw)": h.get("raw_rank"),
             "Rank Δ": (h["entry_rank"] - h["rank"])
@@ -80,17 +81,31 @@ def render(db):
                        "**Refresh prices** (Rebalance tab). 'Rank Δ' = entry rank − today's rank "
                        "(positive = improved).")
 
-        # Flag laggards whose rank has dropped beyond the replacement threshold
-        # (only meaningful once a ranking has been computed).
+        # Flag laggards that breached the exit rule (only meaningful once ranked).
         if ranking["ranked"]:
-            laggards = [h for h in pv["holdings"]
-                        if h["rank"] is None or h["rank"] > cfg.replace_rank_threshold]
+            trailing = getattr(cfg, "exit_mode", "trailing") != "fixed"
+            gap = int(getattr(cfg, "trail_gap", 25))
+
+            def _breached(h):
+                if h["rank"] is None:
+                    return True
+                if trailing:
+                    b = h.get("best_rank")
+                    b = min(b, h["rank"]) if b is not None else h["rank"]
+                    return h["rank"] > b + gap
+                return h["rank"] > cfg.replace_rank_threshold
+
+            rule_txt = (f"trailing exit (rank > best-since-entry + {gap})" if trailing
+                        else f"rank > {cfg.replace_rank_threshold}")
+            laggards = [h for h in pv["holdings"] if _breached(h)]
             if laggards:
-                names = ", ".join(f"{h['symbol']} (rank {h['rank'] or '—'})" for h in laggards)
-                st.warning(f"🔁 {len(laggards)} holding(s) past rank {cfg.replace_rank_threshold} — "
+                names = ", ".join(
+                    f"{h['symbol']} (rank {h['rank'] or '—'}, best {h.get('best_rank') or '—'})"
+                    for h in laggards)
+                st.warning(f"🔁 {len(laggards)} holding(s) hit the {rule_txt} — "
                            f"consider a rebalance: {names}")
             else:
-                st.success(f"✅ All holdings ranked within top {cfg.replace_rank_threshold}.")
+                st.success(f"✅ All holdings within the {rule_txt}.")
 
     # --- Top momentum ranking (both orderings side by side) ---
     if not ranking["ranked"]:

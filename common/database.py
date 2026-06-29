@@ -104,7 +104,9 @@ class MomentumConfig(Base):
     vol_enabled = Column(Boolean, default=True)         # risk-adjust by volatility
     vol_months = Column(Integer, default=3)             # volatility lookback
     min_history_coverage = Column(Float, default=0.8)   # min fraction of expected bars
-    replace_rank_threshold = Column(Integer, default=40)  # sell when rank > this
+    replace_rank_threshold = Column(Integer, default=40)  # 'fixed' mode: sell when rank > this
+    exit_mode = Column(String, default='trailing')      # 'trailing' (default) | 'fixed'
+    trail_gap = Column(Integer, default=25)             # 'trailing' mode: sell when rank > best_rank + this
     reinvest_idle_cash = Column(Boolean, default=True)  # redeploy all cash on rebalance
     cash = Column(Float, default=100000.0)              # idle cash in hand
     capital_injected = Column(Float, default=0.0)       # extra capital from min-1 top-ups
@@ -118,6 +120,7 @@ class MomentumHolding(Base):
     shares = Column(Integer, default=0)
     avg_cost = Column(Float, default=0.0)
     entry_date = Column(String, nullable=True)             # ISO date first bought
+    best_rank = Column(Integer, nullable=True)             # best (lowest) rank since entry (trailing-exit baseline)
 
 class MomentumTrade(Base):
     # Append-only trade ledger. Sells carry realized pnl + holding metadata.
@@ -196,7 +199,10 @@ def _ensure_columns():
         'momentum_rankings': [('raw_rank', 'INTEGER')],
         'momentum_config': [("scoring_model", "VARCHAR DEFAULT 'risk_adjusted'"),
                             ('clenow_days', 'INTEGER DEFAULT 90'),
-                            ('rebalance_days', 'INTEGER DEFAULT 14')],
+                            ('rebalance_days', 'INTEGER DEFAULT 14'),
+                            ("exit_mode", "VARCHAR DEFAULT 'trailing'"),
+                            ('trail_gap', 'INTEGER DEFAULT 25')],
+        'momentum_holdings': [('best_rank', 'INTEGER')],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

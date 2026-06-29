@@ -316,7 +316,22 @@ def compute_ranking(db, as_of=None, persist=True):
     result = rank_universe(mdata.LazyPriceBook(), mdata.Calendar(dates), cfg, as_of, delivery=deliv)
     if persist and result["ranked"]:
         _persist_ranking(db, result["as_of"], result["ranked"])
+        # Daily best-rank tracking (trailing exit baseline) — only when ranking
+        # the latest cached day, so a historical/backtest rank never corrupts it.
+        if result["as_of"] == dates[-1]:
+            _update_best_ranks(db, result["ranked"])
     return result
+
+
+def _update_best_ranks(db, ranked):
+    """Lower each holding's best_rank toward today's rank (init if unset)."""
+    rank_map = {r["symbol"]: r["rank"] for r in ranked}
+    for h in db.query(MomentumHolding).filter(MomentumHolding.shares > 0).all():
+        rk = rank_map.get(h.symbol)
+        if rk is None:
+            continue
+        h.best_rank = rk if h.best_rank is None else min(h.best_rank, rk)
+    db.commit()
 
 
 def _persist_ranking(db, as_of, ranked):
@@ -481,13 +496,25 @@ def build_plan(db, ranking, as_of, price_book=None):
                 "reserve": RESERVE_COUNT}
 
     # --- Replacement: sell laggards, redeploy into best unheld ---
+    # Default exit is TRAILING: each holding tracks its best (lowest) rank since
+    # entry; it's sold once it slips more than `trail_gap` past that best. 'fixed'
+    # mode keeps the old absolute `rank > replace_rank_threshold` test.
+    trailing = (getattr(cfg, "exit_mode", "trailing") or "trailing") != "fixed"
     threshold = cfg.replace_rank_threshold
+    gap = getattr(cfg, "trail_gap", 25) or 25
     sells = []
     for h in holdings:
         rank = rank_map.get(h.symbol)
+        # best rank to date (fall back to entry/current if not yet tracked)
+        best = h.best_rank if h.best_rank is not None else rank
+        if rank is not None and best is not None:
+            best = min(best, rank)
         reason = None
         if rank is None:
             reason = "left-index-or-unranked"
+        elif trailing:
+            if best is not None and rank > best + gap:
+                reason = f"rank {rank} > best {best}+{gap}"
         elif rank > threshold:
             reason = f"rank>{threshold}"
         sp = sell_price(h.symbol)
@@ -584,25 +611,33 @@ def recalc_holdings(db):
     trades = db.query(MomentumTrade).order_by(MomentumTrade.date.asc(), MomentumTrade.id.asc()).all()
     state = {}
     for t in trades:
-        s = state.setdefault(t.symbol, {"shares": 0, "invested": 0.0, "entry": None})
+        s = state.setdefault(t.symbol, {"shares": 0, "invested": 0.0, "entry": None, "entry_rank": None})
         if t.side == "BUY":
             s["invested"] += t.value
             s["shares"] += t.shares
             if s["entry"] is None:
                 s["entry"] = t.date
+                s["entry_rank"] = t.rank        # rank at the buy that opened this position
         else:  # SELL
             if s["shares"] > 0:
                 avg = s["invested"] / s["shares"]
                 s["invested"] -= avg * t.shares
             s["shares"] -= t.shares
             if s["shares"] <= 0:
-                s["shares"], s["invested"], s["entry"] = 0, 0.0, None
+                s["shares"], s["invested"], s["entry"], s["entry_rank"] = 0, 0.0, None, None
 
+    # Preserve the tracked best_rank for positions that survive this rebuild
+    # (same symbol + unchanged entry_date); seed fresh positions from entry rank.
+    prev = {h.symbol: (h.entry_date, h.best_rank)
+            for h in db.query(MomentumHolding).all()}
     db.query(MomentumHolding).delete()
     for sym, s in state.items():
         if s["shares"] > 0:
+            pe = prev.get(sym)
+            best = pe[1] if (pe and pe[0] == s["entry"] and pe[1] is not None) else s["entry_rank"]
             db.add(MomentumHolding(symbol=sym, shares=s["shares"],
-                                   avg_cost=s["invested"] / s["shares"], entry_date=s["entry"]))
+                                   avg_cost=s["invested"] / s["shares"], entry_date=s["entry"],
+                                   best_rank=best))
     db.commit()
 
 
@@ -657,6 +692,7 @@ def portfolio_value(db, rank_map=None, raw_rank_map=None, price_book=None):
             "pnl": mkt - cost, "pnl_pct": ((mkt / cost - 1) * 100) if cost else 0.0,
             "entry_rank": entry_rank.get(h.symbol), "rank": rank_map.get(h.symbol),
             "raw_rank": raw_rank_map.get(h.symbol), "entry_date": h.entry_date,
+            "best_rank": h.best_rank,
         })
     # Order by entry rank (the order they were bought in), unranked last.
     rows.sort(key=lambda r: (r["entry_rank"] is None, r["entry_rank"] or 0))
