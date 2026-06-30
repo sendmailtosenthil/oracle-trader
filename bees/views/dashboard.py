@@ -83,10 +83,19 @@ def render(db, strategies):
 
         # Chart
         df = res['df'].tail(90)
+        show_guides = st.checkbox("Show channel guide lines (25% / 50% / 75%)", value=False, key=f"guides_{strat.id}")
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index, y=df['Ratio'], mode='lines', name='Ratio', line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], mode='lines', name='Upper', line=dict(color='green', dash='dash')))
         fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], mode='lines', name='Lower', line=dict(color='red', dash='dash')))
+        if show_guides:
+            span = df['Upper'] - df['Lower']
+            for frac, label in [(0.25, '25%'), (0.5, '50%'), (0.75, '75%')]:
+                fig.add_trace(go.Scatter(
+                    x=df.index, y=df['Lower'] + frac * span,
+                    mode='lines', name=label,
+                    line=dict(color='lightgrey', dash='dot', width=1),
+                ))
         fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
         st.plotly_chart(fig, use_container_width=True)
         st.divider()
