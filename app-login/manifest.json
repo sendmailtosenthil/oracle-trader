@@ -26,7 +26,7 @@
   "content_scripts": [
     {
       "matches": ["http://129.159.236.137:8501/*"],
-      "js": ["content.js"],
+      "js": ["config.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

@@ -5,12 +5,12 @@ automatically (Streamlit login: username + password). Only runs on the Oracle
 app host.
 
 ## Configure (once)
-1. Edit [content.js](content.js) — set your password:
+1. Copy `config.js.example` to `config.js` and set your password:
    ```js
-   const USERNAME = "senthil";
-   const PASSWORD = "YOUR_PASSWORD"; // your Oracle login password
+   self.ORACLE_CREDS = { user: "senthil", pass: "YOUR_PASSWORD" };
    ```
-   ⚠️ If you push this folder anywhere public, keep your real password out of it.
+   `config.js` is **gitignored** — your real password never gets committed
+   (this repo is public). `content.js` holds only the login logic, no secrets.
 2. If your app host/port ever changes, update the `129.159.236.137:8501` URL in
    both [manifest.json](manifest.json) (`host_permissions` + `content_scripts.matches`)
    and [background.js](background.js) (`APP_URL`).
