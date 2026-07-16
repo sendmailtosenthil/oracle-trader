@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Oracle Web Login",
+  "version": "1.0.0",
+  "description": "One click: opens the Project Oracle web app and logs in automatically.",
+  "permissions": ["tabs"],
+  "host_permissions": ["http://129.159.236.137:8501/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open & log in to Oracle"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://129.159.236.137:8501/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
