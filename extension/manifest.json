@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Oracle Kite enctoken Sync",
+  "version": "1.0.0",
+  "description": "Reads the Zerodha Kite enctoken + user_id from your browser cookies and pushes them to your Project Oracle server.",
+  "permissions": ["cookies", "declarativeContent", "tabs"],
+  "host_permissions": [
+    "https://kite.zerodha.com/*",
+    "https://YOUR_VPS_HOST/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Oracle enctoken Sync (open kite.zerodha.com)",
+    "default_popup": "popup.html"
+  }
+}

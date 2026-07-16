@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+        width: 320px;
+        margin: 0;
+        padding: 14px 16px;
+        color: #1c1c1c;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 10px;
+      }
+      .row {
+        font-size: 12px;
+        margin: 6px 0;
+        word-break: break-all;
+      }
+      .label {
+        color: #666;
+      }
+      .val {
+        font-family: ui-monospace, Menlo, monospace;
+      }
+      button {
+        width: 100%;
+        padding: 9px;
+        margin-top: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        border: 0;
+        border-radius: 6px;
+        background: #ff5722;
+        color: #fff;
+        cursor: pointer;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      #status {
+        font-size: 12px;
+        margin-top: 10px;
+        min-height: 16px;
+      }
+      .ok {
+        color: #1b7f2e;
+      }
+      .err {
+        color: #c62828;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Oracle enctoken Sync</h1>
+    <div class="row"><span class="label">User ID:</span> <span class="val" id="userId">—</span></div>
+    <div class="row"><span class="label">enctoken:</span> <span class="val" id="enctoken">—</span></div>
+    <button id="syncBtn" disabled>Sync to Oracle</button>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
