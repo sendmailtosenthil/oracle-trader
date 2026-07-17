@@ -155,9 +155,13 @@ def fetch_enctoken(user_id=None, password=None, totp_secret=None, headless=True,
             otp_selector = "input[maxlength='6']"
             page.wait_for_selector(otp_selector, timeout=ms)
 
-            # Try up to 2 codes in case we fill right on a 30s TOTP boundary.
+            # SAFETY: submit the code only ONCE. Kite locks the account after a
+            # few consecutive wrong TOTPs ("N attempts remain before the account
+            # is locked"), so retrying a bad code just burns those attempts. With
+            # a correct secret + synced clock, one code always works (Kite accepts
+            # the current 30s window, and typically the adjacent one too).
             last_error = None
-            for attempt in range(2):
+            for attempt in range(1):
                 otp = page.query_selector(otp_selector)
                 if otp is None:
                     break  # field gone → 2FA already accepted; check cookie below
