@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  body { font: 13px/1.45 system-ui, -apple-system, sans-serif; width: 270px; margin: 0; padding: 14px; color: #222; }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  .sub { color: #888; font-size: 11px; margin: 0 0 10px; }
+  #list { margin-bottom: 10px; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  .use { flex: 1; text-align: left; padding: 7px 9px; border: 1px solid #ddd; background: #fafafa; border-radius: 5px; cursor: pointer; }
+  .use.active { border-color: #ff5722; background: #fff3ee; font-weight: 600; }
+  .del { padding: 7px 9px; border: 1px solid #eee; background: #fafafa; border-radius: 5px; cursor: pointer; color: #a00; }
+  hr { border: 0; border-top: 1px solid #eee; margin: 12px 0; }
+  .form input { width: 100%; box-sizing: border-box; padding: 6px; margin: 3px 0; border: 1px solid #ccc; border-radius: 4px; }
+  button.primary { width: 100%; padding: 8px; border: 0; border-radius: 5px; cursor: pointer; font-weight: 600; }
+  #add { background: #eef; color: #224; margin-top: 4px; }
+  #login { background: #ff5722; color: #fff; margin-top: 10px; }
+  #status { min-height: 1em; margin-top: 6px; color: #2a7; font-size: 12px; }
+  .muted { color: #999; font-size: 11px; margin-top: 10px; }
+</style>
+
+<h1>Zerodha Kite Auto-Login</h1>
+<p class="sub">Pick which account THIS browser logs in as.</p>
+
+<div id="list"></div>
+
+<hr />
+<div class="form">
+  <div style="font-weight:600;margin-bottom:4px;">Add / update an account</div>
+  <input id="user" placeholder="User ID (e.g. PC8006)" autocomplete="off" />
+  <input id="pass" type="password" placeholder="Password" autocomplete="off" />
+  <input id="secret" placeholder="TOTP secret (base32)" autocomplete="off" />
+  <button id="add" class="primary">Save account</button>
+</div>
+
+<div id="status"></div>
+<button id="login" class="primary">Open Kite &amp; log in</button>
+<p class="muted">Stored only in this browser profile (chrome.storage). Each browser keeps its own account.</p>
+
+<script src="config.js"></script>
+<script src="popup.js"></script>

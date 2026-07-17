@@ -1,15 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Zerodha Kite Auto-Login",
-  "version": "1.0.0",
-  "description": "One click: opens Kite and logs in with your user id, password and time-based OTP.",
-  "permissions": ["tabs"],
+  "version": "1.1.0",
+  "description": "One click: opens Kite and logs in with your user id, password and time-based OTP. Multiple accounts, one per browser.",
+  "permissions": ["tabs", "storage"],
   "host_permissions": ["https://kite.zerodha.com/*"],
-  "background": {
-    "service_worker": "background.js"
-  },
   "action": {
-    "default_title": "Log in to Zerodha Kite",
+    "default_title": "Zerodha Kite Auto-Login",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
