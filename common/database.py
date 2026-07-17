@@ -226,11 +226,23 @@ def hash_password(password):
 
 def seed_data():
     db = SessionLocal()
-    # Create Default User
-    if not db.query(User).filter(User.username == 'senthil').first():
-        user = User(username='senthil', password_hash=hash_password('L@ngTerm2026'))
-        db.add(user)
-        
+    # Admin user credentials come from the environment (never hard-code secrets:
+    # this repo is public). ORACLE_ADMIN_PASSWORD is the source of truth — when
+    # set, the admin user is created if missing and its password is kept in sync
+    # on every startup, so rotating the password is just editing .env + restart.
+    admin_user = os.environ.get('ORACLE_ADMIN_USER', 'senthil')
+    admin_pass = os.environ.get('ORACLE_ADMIN_PASSWORD')
+    existing = db.query(User).filter(User.username == admin_user).first()
+    if admin_pass:
+        if existing:
+            existing.password_hash = hash_password(admin_pass)
+        else:
+            db.add(User(username=admin_user, password_hash=hash_password(admin_pass)))
+    elif not existing:
+        print("WARNING: ORACLE_ADMIN_PASSWORD not set — no admin user created. "
+              "Set it in .env and restart to enable login.")
+
+
     # Create NIFTY vs GOLD Strategy
     nifty_gold = db.query(Strategy).filter(Strategy.name == 'NIFTY vs GOLD').first()
     if not nifty_gold:
