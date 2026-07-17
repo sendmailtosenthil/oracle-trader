@@ -1,0 +1,7 @@
+// Copy this file to `config.js` and fill it in.
+// `config.js` is gitignored so your real credentials are never committed.
+self.ORACLE_API = {
+  base: "http://YOUR_VPS_HOST:8502", // Oracle enctoken API (no trailing slash)
+  user: "oracle", // == ENCTOKEN_API_USER on the server
+  pass: "YOUR_ENCTOKEN_API_PASS", // == ENCTOKEN_API_PASS on the server
+};

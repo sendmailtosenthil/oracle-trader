@@ -6,7 +6,7 @@
   "permissions": ["cookies", "declarativeContent", "tabs"],
   "host_permissions": [
     "https://kite.zerodha.com/*",
-    "https://YOUR_VPS_HOST/*"
+    "http://129.159.236.137:8502/*"
   ],
   "background": {
     "service_worker": "background.js"

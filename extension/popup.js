@@ -1,11 +1,9 @@
-// ============================================================================
-// EDIT THESE THREE VALUES, then reload the extension (chrome://extensions).
-// They must match the ENCTOKEN_API_* settings on your Oracle server.
-// ============================================================================
-const API_BASE = "https://YOUR_VPS_HOST"; // e.g. https://oracle.example.com  (no trailing slash)
-const BASIC_USER = "oracle";              // == ENCTOKEN_API_USER on the server
-const BASIC_PASS = "change-me";           // == ENCTOKEN_API_PASS on the server
-// ============================================================================
+// Config comes from config.js (self.ORACLE_API) — copy config.js.example to
+// config.js and fill it in. config.js is gitignored so secrets never commit.
+const CFG = self.ORACLE_API || {};
+const API_BASE = CFG.base || "";
+const BASIC_USER = CFG.user || "";
+const BASIC_PASS = CFG.pass || "";
 
 const KITE_HOST = "kite.zerodha.com";
 const KITE_URL = "https://kite.zerodha.com";
@@ -38,6 +36,10 @@ async function activeTabIsKite() {
 let current = { userId: null, enctoken: null };
 
 async function init() {
+  if (!API_BASE || !BASIC_PASS) {
+    setStatus("Set your API details in config.js, then reload.", "err");
+    return;
+  }
   // Guard: only operate when the active tab is Kite.
   if (!(await activeTabIsKite())) {
     setStatus("Open kite.zerodha.com (logged in) to use this.", "err");
