@@ -16,5 +16,6 @@ credentials.json
 token.json
 # Bare-metal deploy: job logs
 logs/
-# Chrome extension local credentials (real password — never commit)
+# Chrome extension local credentials (real password/secret — never commit)
 app-login/config.js
+zerodha-login/config.js

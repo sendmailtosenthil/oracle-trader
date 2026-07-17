@@ -1,0 +1,7 @@
+// Copy this file to `config.js` and fill in your Kite credentials.
+// `config.js` is gitignored so your real secrets are never committed.
+self.KITE_CREDS = {
+  user: "PC8006",
+  pass: "YOUR_KITE_PASSWORD",
+  secret: "YOUR_TOTP_SECRET_BASE32", // the 2FA "external TOTP" secret key
+};
