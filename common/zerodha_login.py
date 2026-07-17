@@ -28,6 +28,7 @@ import hmac
 import logging
 import os
 import struct
+import tempfile
 import time
 
 log = logging.getLogger("zerodha-login")
@@ -105,17 +106,36 @@ def fetch_enctoken(user_id=None, password=None, totp_secret=None, headless=True,
     ms = timeout * 1000
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(headless=headless)
+            # --no-sandbox / --disable-dev-shm-usage are required on most headless
+            # VPS + container hosts: the default /dev/shm is tiny (~64MB) and
+            # Chromium HANGS trying to use it. --disable-dev-shm-usage routes that
+            # to /tmp instead. --disable-gpu avoids a GPU probe with no display.
+            log.info("launching headless Chromium...")
+            browser = p.chromium.launch(
+                headless=headless,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+            )
         except Exception as exc:  # noqa: BLE001 - surface a clean install hint
             raise ZerodhaLoginError(
                 f"could not launch headless Chromium ({exc}); "
-                "run: python -m playwright install chromium"
+                "run: python -m playwright install --with-deps chromium"
             ) from exc
         context = browser.new_context()
         page = context.new_page()
+
+        def _debug_shot(tag):
+            """Save a screenshot for post-mortem when a headless run misbehaves."""
+            try:
+                path = os.path.join(tempfile.gettempdir(), f"zerodha_login_{tag}.png")
+                page.screenshot(path=path)
+                log.warning("saved debug screenshot: %s", path)
+            except Exception:  # noqa: BLE001 - best-effort diagnostics only
+                pass
+
         try:
             log.info("opening Kite login for user_id=%s", user_id)
             page.goto(_KITE_URL, wait_until="domcontentloaded", timeout=ms)
+            log.info("login page loaded")
 
             # --- Step 1: user id + password -------------------------------
             # On the password screen #userid is a text field; on the 2FA screen
@@ -124,6 +144,7 @@ def fetch_enctoken(user_id=None, password=None, totp_secret=None, headless=True,
             page.fill("#userid", user_id)
             page.fill("#password", password)
             page.click('button[type="submit"]')
+            log.info("submitted user id + password, waiting for 2FA prompt...")
 
             # --- Step 2: TOTP 2FA -----------------------------------------
             # The TOTP field is the numeric maxlength=6 input; waiting on that
@@ -147,12 +168,15 @@ def fetch_enctoken(user_id=None, password=None, totp_secret=None, headless=True,
                     page.click('button[type="submit"]', timeout=2000)
                 except Exception:  # noqa: BLE001 - auto-submit already navigated
                     pass
-                # Success = enctoken cookie set. Poll briefly.
-                for _ in range(int(timeout * 2)):
+                log.info("submitted TOTP (attempt %d), waiting for enctoken...", attempt + 1)
+                # Success = enctoken cookie set. Poll briefly, with a heartbeat.
+                for i in range(int(timeout * 2)):
                     token = _enctoken_from_cookies(context)
                     if token:
                         log.info("login succeeded (enctoken len=%d)", len(token))
                         return token
+                    if i and i % 20 == 0:
+                        log.info("...still waiting for enctoken (%ds)", i // 2)
                     page.wait_for_timeout(500)
                 # Still no token → if the field is gone, login failed for good;
                 # if it's back (rejected code), loop for a fresh code.
@@ -164,10 +188,12 @@ def fetch_enctoken(user_id=None, password=None, totp_secret=None, headless=True,
             token = _enctoken_from_cookies(context)
             if token:
                 return token
+            _debug_shot("no_token")
             raise ZerodhaLoginError(f"no enctoken after login ({last_error or 'unknown reason'})")
         except ZerodhaLoginError:
             raise
         except Exception as exc:  # noqa: BLE001 - normalise Playwright errors
+            _debug_shot("error")
             raise ZerodhaLoginError(f"headless login failed: {exc}") from exc
         finally:
             context.close()
