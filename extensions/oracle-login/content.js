@@ -61,7 +61,7 @@ async function attempt() {
 
 async function run() {
   if (!USERNAME || !PASSWORD) {
-    console.warn("[app-login] Set your credentials in config.js");
+    console.warn("[oracle-login] Set your credentials in config.js");
     return;
   }
   // The form renders after the websocket connects — wait up to ~10s for it.

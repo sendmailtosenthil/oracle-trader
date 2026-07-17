@@ -18,7 +18,7 @@ app host.
 ## Install in Chrome
 1. Open `chrome://extensions`
 2. Toggle **Developer mode** on (top-right)
-3. **Load unpacked** → select this `app-login/` folder
+3. **Load unpacked** → select this `oracle-login/` folder
 4. After any edit, click the **↻ reload** icon on the card.
 
 ## Use

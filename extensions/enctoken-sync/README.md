@@ -20,7 +20,7 @@ listed here). Keep the `https://kite.zerodha.com/*` entry.
 ## Install in Chrome (local)
 1. Open `chrome://extensions`.
 2. Toggle **Developer mode** on (top-right).
-3. Click **Load unpacked** and select this `extension/` folder.
+3. Click **Load unpacked** and select this `enctoken-sync/` folder.
 4. (After any edit to the files, click the **↻ reload** icon on the card.)
 
 ## Use
