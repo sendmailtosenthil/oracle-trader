@@ -9,6 +9,7 @@ import datetime
 import pytz
 
 from common.database import BrokerConfig, DownloadJob, get_db
+from common.market_calendar import skip_reason
 from common.notifications import send_email
 from common.zerodha_client import ZerodhaClient
 from downloader.services import core
@@ -20,7 +21,9 @@ IST = pytz.timezone('Asia/Kolkata')
 def run_daily_download():
     """Auto-download today's market data, upload to Drive and email a summary."""
     now_ist = datetime.datetime.now(IST)
-    if now_ist.weekday() >= 5:
+    reason = skip_reason(now_ist)
+    if reason:
+        print(f"Daily download skipped: {reason}.")
         return
 
     print(f"[{now_ist.strftime('%H:%M:%S')}] Running daily market-data download...")
@@ -101,6 +104,10 @@ def run_db_backup():
     Skips if a download job is genuinely running so we never snapshot mid-write.
     """
     now_ist = datetime.datetime.now(IST)
+    reason = skip_reason(now_ist)
+    if reason:
+        print(f"DB backup skipped: {reason}.")
+        return
     db = next(get_db())
     active = _has_active_download(db)
     db.close()

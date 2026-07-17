@@ -4,18 +4,26 @@ There is no long-running daemon. Each task is a one-shot function invoked by
 cron *inside the container* as ``python -m bees.bot <job>`` (see
 /etc/cron.d/oracle), so memory is reclaimed after every run. Jobs:
 
+  relogin   - refresh the Zerodha enctoken via headless login if it's expired
   signals   - end-of-day Donchian signal scan + switch alert emails
   summary   - daily portfolio summary email
   download  - daily market-data download (delegates to downloader.jobs)
   backup    - daily DB backup to Drive (delegates to downloader.jobs)
   momentum  - daily momentum advisory email (delegates to momentum.jobs)
+
+Every job self-guards non-trading days (weekends + NSE holidays from
+holiday.txt) via ``common.market_calendar`` — the market is closed, so there is
+nothing to do.
 """
 import datetime
+import os
 import sys
 
 import pytz
 
-from common.database import Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
+from common.database import BrokerConfig, Strategy, PendingSwitch, Portfolio, CashFlow, init_db, get_db
+from common.broker import is_zerodha_token_valid, clear_token_cache
+from common.market_calendar import is_trading_day, skip_reason
 from common.notifications import send_email
 from bees.donchian import evaluate_donchian_intraday
 from downloader.jobs import run_daily_download, run_db_backup
@@ -23,9 +31,70 @@ from momentum.jobs import run_daily_momentum_advisory
 
 IST = pytz.timezone('Asia/Kolkata')
 
+
+def ensure_enctoken():
+    """Refresh the Zerodha enctoken via headless login when it isn't valid.
+
+    Runs daily just before the market-close jobs. If a valid enctoken is already
+    stored we do nothing; otherwise we drive a headless Kite login (see
+    ``common.zerodha_login``), persist the fresh token to the same
+    ``broker_config`` row the UI/API write to, and clear the validity cache so
+    downstream jobs pick it up immediately.
+    """
+    now_ist = datetime.datetime.now(IST)
+    reason = skip_reason(now_ist)
+    if reason:
+        print(f"Enctoken refresh skipped: {reason}.")
+        return
+
+    # The account we log into is whatever ZERODHA_USER_ID names (fetch_enctoken
+    # uses the same env), so the fresh token must be stored against that user_id.
+    db = next(get_db())
+    cfg = db.query(BrokerConfig).filter(BrokerConfig.broker_name == "ZERODHA").first()
+    user_id = (os.environ.get("ZERODHA_USER_ID") or "").strip() or (cfg.user_id if cfg else "") or "PC8006"
+    if cfg and cfg.enctoken and is_zerodha_token_valid(cfg.enctoken, cfg.user_id or user_id):
+        print("Enctoken refresh skipped: existing token is still valid.")
+        db.close()
+        return
+    db.close()
+
+    print(f"[{now_ist.strftime('%H:%M:%S')}] Enctoken missing/expired — logging in headlessly...")
+    # Imported lazily so a missing Playwright install only breaks this one job.
+    from common.zerodha_login import fetch_enctoken, ZerodhaLoginError
+    try:
+        enctoken = fetch_enctoken()
+    except ZerodhaLoginError as exc:
+        print(f"Headless login FAILED: {exc}")
+        send_email(
+            "<h2>🔑 Oracle enctoken refresh FAILED</h2>"
+            f"<p>The automated Zerodha login could not obtain a fresh enctoken:</p>"
+            f"<pre>{exc}</pre>"
+            "<p>Update it manually in <b>Broker Setup</b> (or via the extension) so "
+            "today's jobs can run.</p>",
+            "🔑 Oracle enctoken refresh FAILED",
+        )
+        return
+
+    db = next(get_db())
+    try:
+        cfg = db.query(BrokerConfig).filter(BrokerConfig.broker_name == "ZERODHA").first()
+        if cfg:
+            cfg.user_id = user_id
+            cfg.enctoken = enctoken
+        else:
+            db.add(BrokerConfig(broker_name="ZERODHA", user_id=user_id, enctoken=enctoken))
+        db.commit()
+    finally:
+        db.close()
+    clear_token_cache()
+    print(f"Enctoken refreshed for user_id={user_id} (len={len(enctoken)}).")
+
+
 def check_intraday_signals():
     now_ist = datetime.datetime.now(IST)
-    if now_ist.weekday() >= 5:
+    reason = skip_reason(now_ist)
+    if reason:
+        print(f"Signals skipped: {reason}.")
         return
 
     print(f"[{now_ist.strftime('%H:%M:%S')}] Running intraday check...")
@@ -95,6 +164,10 @@ def check_intraday_signals():
     db.close()
 
 def send_daily_summary():
+    reason = skip_reason(datetime.datetime.now(IST))
+    if reason:
+        print(f"Daily summary skipped: {reason}.")
+        return
     print("Generating daily 8:30 AM summary...")
     db = next(get_db())
     strategies = db.query(Strategy).all()
@@ -153,6 +226,7 @@ def send_daily_summary():
 
 # Job name -> callable. Invoked one-shot by cron.
 JOBS = {
+    "relogin": ensure_enctoken,
     "signals": check_intraday_signals,
     "summary": send_daily_summary,
     "download": run_daily_download,

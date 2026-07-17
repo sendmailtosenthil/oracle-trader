@@ -11,6 +11,7 @@ import datetime
 import pytz
 
 from common.database import BrokerConfig, MomentumHolding, get_db
+from common.market_calendar import skip_reason
 from common.notifications import send_email
 from common.zerodha_client import ZerodhaClient
 from momentum.services import data as mdata
@@ -21,10 +22,11 @@ HISTORY_DAYS = 455  # ~15 months — covers the 9-month factor + 180d Clenow win
 
 
 def run_daily_momentum_advisory():
-    """Refresh prices, rank, and email the daily momentum advisory (Mon–Fri)."""
+    """Refresh prices, rank, and email the daily momentum advisory (trading days)."""
     now = datetime.datetime.now(IST)
-    if now.weekday() >= 5:
-        print("Momentum advisory skipped: weekend.")
+    reason = skip_reason(now)
+    if reason:
+        print(f"Momentum advisory skipped: {reason}.")
         return
 
     db = next(get_db())

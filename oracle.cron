@@ -5,6 +5,7 @@ CRON_TZ=Asia/Kolkata
 SHELL=/bin/bash
 
 # m  h  dom mon dow  user  command
+29 15  *   *   *    root  bash /app/run-job.sh relogin  > /proc/1/fd/1 2>/proc/1/fd/2
 35 15  *   *   *    root  bash /app/run-job.sh signals  > /proc/1/fd/1 2>/proc/1/fd/2
 40 15  *   *   *    root  bash /app/run-job.sh download > /proc/1/fd/1 2>/proc/1/fd/2
 0  16  *   *   *    root  bash /app/run-job.sh backup   > /proc/1/fd/1 2>/proc/1/fd/2

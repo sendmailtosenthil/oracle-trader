@@ -28,6 +28,14 @@ echo "==> Installing dependencies..."
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/venv/bin/pip" install --quiet -r "$APP_DIR/requirements.txt"
 
+# Chromium for the headless Zerodha login (daily enctoken refresh). --with-deps
+# also pulls the OS shared libraries Chromium needs (needs sudo/apt); it's a
+# one-shot ~150MB download and the browser only runs for a few seconds a day.
+echo "==> Installing Playwright Chromium (headless login)..."
+"$APP_DIR/venv/bin/python" -m playwright install --with-deps chromium \
+    || "$APP_DIR/venv/bin/python" -m playwright install chromium \
+    || echo "!! Chromium install failed — 'relogin' will be disabled until you run: venv/bin/python -m playwright install --with-deps chromium"
+
 # 2) env file -----------------------------------------------------------------
 if [ ! -f "$APP_DIR/.env" ]; then
     cp "$APP_DIR/deploy/oracle.env.example" "$APP_DIR/.env"
@@ -82,6 +90,7 @@ mkdir -p "$APP_DIR/logs"
 CRON_BLOCK=$(cat <<CRON
 # >>> oracle jobs (managed by deploy/setup.sh) >>>
 CRON_TZ=Asia/Kolkata
+29 15 * * * $WRAP relogin  >> $APP_DIR/logs/cron.log 2>&1
 35 15 * * * $WRAP signals  >> $APP_DIR/logs/cron.log 2>&1
 40 15 * * * $WRAP download >> $APP_DIR/logs/cron.log 2>&1
 0 16 * * *  $WRAP backup   >> $APP_DIR/logs/cron.log 2>&1

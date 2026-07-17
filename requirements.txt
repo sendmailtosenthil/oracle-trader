@@ -9,3 +9,6 @@ requests
 google-api-python-client
 google-auth
 google-auth-oauthlib
+# Headless Zerodha login for the daily enctoken refresh (bees.bot relogin).
+# Needs a browser too: python -m playwright install chromium  (see deploy/setup.sh)
+playwright
