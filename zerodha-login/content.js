@@ -108,11 +108,21 @@ async function doOtp() {
   }
 }
 
+// Kite shows the login + 2FA forms at the site root ("/"); once authenticated it
+// redirects to an app route (/dashboard, /holdings, ...). So if we're not at the
+// login URL, we're already logged in — do nothing (and never risk typing into a
+// dashboard field).
+const atLoginUrl = () => {
+  const p = location.pathname;
+  return p === "/" || p === "" || p.startsWith("/connect");
+};
+
 async function run() {
   if (!USERID || !PASSWORD) {
     console.warn("[zerodha-login] Set your credentials in config.js");
     return;
   }
+  if (!atLoginUrl()) return; // already logged in → no action
   await doLogin();
   await doOtp();
 }
