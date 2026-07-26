@@ -587,9 +587,8 @@ def month_folder_name(symbol, d):
 def data_file_path(symbol, date_str, kind):
     """Resolve the local CSV path for a downloaded artifact.
 
-    ``kind`` is one of ``index``/``vix``/``futures``/``options``. Used by both
-    the downloader (when writing) and analytics (when reading) so the naming
-    convention lives in one place.
+    ``kind`` is one of ``index``/``vix``/``futures``/``options``. Keeps the
+    naming convention in one place for the downloader (when writing).
     """
     d = datetime.date.fromisoformat(date_str)
     folder = month_folder_name(symbol, d)
@@ -601,14 +600,6 @@ def data_file_path(symbol, date_str, kind):
         "options": f"{sym_lc}-options-{date_str}.csv",
     }
     return os.path.join(DATA_ROOT, folder, names[kind])
-
-
-def atm_step_for(symbol):
-    """ATM strike rounding step for a symbol (50 for NIFTY, 100 for BANKNIFTY)."""
-    for t in TASKS:
-        if t["symbol"] == symbol:
-            return t["atm_step"]
-    return 50
 
 
 def _parse_folder_month(name):

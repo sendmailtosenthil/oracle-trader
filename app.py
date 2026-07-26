@@ -18,11 +18,11 @@ from bees.auth import require_auth, logout
 from bees.styles import inject_global_css
 from bees.views import dashboard, operations, ledger, broker_setup
 from downloader.views import page as downloader_page
-from downloader.views import analytics as downloader_analytics
 from momentum.views import dashboard as momentum_dashboard
 from momentum.views import rebalance as momentum_rebalance
 from momentum.views import ledger as momentum_ledger
 from zerodha_trades.views import manage as ztrade_manage
+from zerodha_trades.views import dashboard as ztrade_dashboard
 
 st.set_page_config(page_title="Project Oracle", layout="wide")
 inject_global_css()
@@ -64,10 +64,6 @@ def _options_download():
     downloader_page.render(db)
 
 
-def _analytics():
-    downloader_analytics.render(db)
-
-
 def _momentum_dashboard():
     momentum_dashboard.render(db)
 
@@ -78,6 +74,10 @@ def _momentum_rebalance():
 
 def _momentum_ledger():
     momentum_ledger.render(db)
+
+
+def _ztrade_dashboard():
+    ztrade_dashboard.render(db)
 
 
 def _ztrade_manage():
@@ -101,8 +101,6 @@ nav = st.navigation({
     "📥 Downloader": [
         st.Page(_options_download, title="Options Download", icon="⬇️",
                 url_path="options-download"),
-        st.Page(_analytics, title="Analytics", icon="📈",
-                url_path="analytics"),
     ],
     "📈 Momentum": [
         st.Page(_momentum_dashboard, title="Dashboard", icon="📊",
@@ -113,6 +111,8 @@ nav = st.navigation({
                 url_path="momentum-ledger"),
     ],
     "📦 Zerodha Trades": [
+        st.Page(_ztrade_dashboard, title="Dashboard", icon="📊",
+                url_path="ztrade"),
         st.Page(_ztrade_manage, title="Group Management", icon="🗂️",
                 url_path="ztrade-groups"),
     ],
