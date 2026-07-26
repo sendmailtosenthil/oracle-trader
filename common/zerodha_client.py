@@ -123,6 +123,18 @@ class ZerodhaClient:
         except Exception:
             return False
 
+    # ----- portfolio ---------------------------------------------------
+    def get_positions(self):
+        """Return the *net* positions book as a list of raw Kite dicts.
+
+        ``/oms/portfolio/positions`` returns ``{"net": [...], "day": [...]}``.
+        ``net`` is the carry-forward book and the one this project cares about:
+        open legs have a non-zero ``quantity``; squared-off legs stay in the
+        list with ``quantity == 0`` and their P&L moved into ``realised``.
+        """
+        payload = self._get("/oms/portfolio/positions")
+        return (payload.get("data") or {}).get("net") or []
+
     # ----- instruments -------------------------------------------------
     def nse_eq_token_map(self, timeout=60):
         """Stream the instruments dump and return only ``{tradingsymbol: token}``

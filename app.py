@@ -22,6 +22,7 @@ from downloader.views import analytics as downloader_analytics
 from momentum.views import dashboard as momentum_dashboard
 from momentum.views import rebalance as momentum_rebalance
 from momentum.views import ledger as momentum_ledger
+from zerodha_trades.views import manage as ztrade_manage
 
 st.set_page_config(page_title="Project Oracle", layout="wide")
 inject_global_css()
@@ -79,6 +80,10 @@ def _momentum_ledger():
     momentum_ledger.render(db)
 
 
+def _ztrade_manage():
+    ztrade_manage.render(db)
+
+
 def _broker_setup():
     broker_setup.render(db)
 
@@ -106,6 +111,10 @@ nav = st.navigation({
                 url_path="momentum-rebalance"),
         st.Page(_momentum_ledger, title="Ledger & History", icon="📒",
                 url_path="momentum-ledger"),
+    ],
+    "📦 Zerodha Trades": [
+        st.Page(_ztrade_manage, title="Group Management", icon="🗂️",
+                url_path="ztrade-groups"),
     ],
     "⚙️ Setup": [
         st.Page(_broker_setup, title="Broker Setup", icon="🔑",

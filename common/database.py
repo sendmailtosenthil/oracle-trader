@@ -178,6 +178,87 @@ class DownloadStat(Base):
     upload_status = Column(String, default='skipped')
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+
+# --- Zerodha Trades -------------------------------------------------------
+# User-defined baskets ("groups") over live Kite positions. A group carries its
+# own stoploss / target in rupees and is monitored independently of the broker,
+# so a multi-leg structure can be managed as one risk unit even though Zerodha
+# only ever reports it as unrelated legs.
+
+class TradeGroup(Base):
+    __tablename__ = 'ztrade_groups'
+    id = Column(Integer, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+    # Rupee P&L triggers. Either may be positive or negative: `target` is the
+    # upper trigger (fires when P&L rises to it), `stoploss` the lower one — so
+    # a positive stoploss acts as a profit floor. None = that side is unarmed.
+    stoploss = Column(Float, nullable=True)
+    target = Column(Float, nullable=True)
+    alert_enabled = Column(Boolean, default=True)
+    status = Column(String, default='draft')        # 'draft' | 'deployed' | 'triggered'
+    trigger_type = Column(String, nullable=True)    # 'TARGET' | 'STOPLOSS'
+    trigger_message = Column(String, nullable=True)
+    triggered_at = Column(DateTime, nullable=True)
+    triggered_pnl = Column(Float, nullable=True)
+    deployed_at = Column(DateTime, nullable=True)
+    last_pnl = Column(Float, default=0.0)           # most recently marked P&L
+    last_evaluated_at = Column(DateTime, nullable=True)
+    notified_at = Column(DateTime, nullable=True)   # last alert sent (dedupe)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TradeGroupLeg(Base):
+    # One position — or a slice of one — assigned to a group. `quantity` is
+    # signed and matches the position's direction; it may be smaller than the
+    # broker position so the same leg can be split across groups.
+    __tablename__ = 'ztrade_group_legs'
+    __table_args__ = (UniqueConstraint('group_id', 'tradingsymbol', 'product',
+                                       name='uq_ztrade_leg_group_symbol_product'),)
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey('ztrade_groups.id'), nullable=False)
+    tradingsymbol = Column(String, nullable=False)
+    exchange = Column(String, default='NFO')
+    product = Column(String, default='NRML')
+    instrument_token = Column(Integer, nullable=True)
+    quantity = Column(Integer, nullable=False)          # signed qty owned by this group
+    source_quantity = Column(Integer, nullable=False)   # broker qty when added (pro-rate basis)
+    avg_price = Column(Float, default=0.0)              # position avg at add time (reference)
+    frozen_pnl = Column(Float, nullable=True)           # last P&L once the position disappeared
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class PositionSnapshot(Base):
+    # Latest polled Kite position, one row per (tradingsymbol, product). Written
+    # by the poller so the UI can render without its own broker round-trip.
+    __tablename__ = 'ztrade_position_snapshots'
+    __table_args__ = (UniqueConstraint('tradingsymbol', 'product',
+                                       name='uq_ztrade_snapshot_symbol_product'),)
+    id = Column(Integer, primary_key=True)
+    tradingsymbol = Column(String, nullable=False)
+    exchange = Column(String, default='NFO')
+    product = Column(String, default='NRML')
+    instrument_token = Column(Integer, nullable=True)
+    quantity = Column(Integer, default=0)               # 0 = position squared off
+    average_price = Column(Float, default=0.0)
+    last_price = Column(Float, default=0.0)
+    pnl = Column(Float, default=0.0)
+    realised = Column(Float, default=0.0)
+    unrealised = Column(Float, default=0.0)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TradeGroupSetting(Base):
+    # Single-row settings for the Zerodha Trades poller.
+    __tablename__ = 'ztrade_settings'
+    id = Column(Integer, primary_key=True)
+    poll_seconds = Column(Integer, default=10)
+    poller_enabled = Column(Boolean, default=True)
+    market_hours_only = Column(Boolean, default=True)
+    alert_email = Column(String, nullable=True)
+    last_poll_at = Column(DateTime, nullable=True)
+    last_poll_status = Column(String, nullable=True)
+
+
 # Singleton setup
 engine = None
 SessionLocal = None

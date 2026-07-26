@@ -1,0 +1,304 @@
+"""Group definition, P&L marking, and trigger evaluation.
+
+A group's P&L is the sum of its legs, each marked against the *position's
+average price* and pro-rated to the quantity the group owns:
+
+    leg_pnl = group_qty * (last_price - average_price)
+
+so a group holding a whole position reports exactly the P&L Kite shows, and a
+group holding half of it reports half. Once the broker squares the position off
+(``quantity == 0``) the leg's share of the realised P&L is frozen instead.
+
+Triggers are absolute rupee levels on that P&L: ``target`` is the upper bound
+and ``stoploss`` the lower one. Both may be positive or negative, so a positive
+stoploss works as a profit floor.
+"""
+import datetime
+
+from common.database import TradeGroup, TradeGroupLeg, TradeGroupSetting
+
+DRAFT = 'draft'
+DEPLOYED = 'deployed'
+TRIGGERED = 'triggered'
+
+TARGET = 'TARGET'
+STOPLOSS = 'STOPLOSS'
+
+
+# ----- settings ----------------------------------------------------------
+def get_settings(db):
+    """The single settings row, created with defaults on first access."""
+    row = db.query(TradeGroupSetting).first()
+    if row is None:
+        row = TradeGroupSetting()
+        db.add(row)
+        db.commit()
+    return row
+
+
+# ----- group CRUD --------------------------------------------------------
+def list_groups(db):
+    return db.query(TradeGroup).order_by(TradeGroup.created_at.asc()).all()
+
+
+def get_group(db, group_id):
+    return db.query(TradeGroup).filter(TradeGroup.id == group_id).first()
+
+
+def legs_of(db, group_id):
+    return (
+        db.query(TradeGroupLeg)
+        .filter(TradeGroupLeg.group_id == group_id)
+        .order_by(TradeGroupLeg.tradingsymbol)
+        .all()
+    )
+
+
+def create_group(db, name, stoploss=None, target=None, alert_enabled=True):
+    """Create a draft group. Returns ``(group, error)``."""
+    name = (name or '').strip()
+    if not name:
+        return None, "Group name is required."
+    if db.query(TradeGroup).filter(TradeGroup.name == name).first():
+        return None, f"A group named '{name}' already exists."
+    err = validate_levels(stoploss, target)
+    if err:
+        return None, err
+    group = TradeGroup(
+        name=name, stoploss=stoploss, target=target,
+        alert_enabled=bool(alert_enabled), status=DRAFT,
+    )
+    db.add(group)
+    db.commit()
+    return group, None
+
+
+def validate_levels(stoploss, target):
+    """Stoploss must sit below target when both are armed."""
+    if stoploss is not None and target is not None and stoploss >= target:
+        return (f"Stoploss (₹{stoploss:,.2f}) must be below target (₹{target:,.2f}) — "
+                "otherwise both trigger at once.")
+    return None
+
+
+def update_group(db, group, name=None, stoploss=..., target=..., alert_enabled=None):
+    """Patch a group's editable fields. Returns ``(group, error)``.
+
+    ``stoploss`` / ``target`` use an ``...`` sentinel so ``None`` can be passed
+    explicitly to disarm that side.
+    """
+    new_sl = group.stoploss if stoploss is ... else stoploss
+    new_tg = group.target if target is ... else target
+    err = validate_levels(new_sl, new_tg)
+    if err:
+        return group, err
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return group, "Group name is required."
+        clash = (
+            db.query(TradeGroup)
+            .filter(TradeGroup.name == name, TradeGroup.id != group.id)
+            .first()
+        )
+        if clash:
+            return group, f"A group named '{name}' already exists."
+        group.name = name
+    group.stoploss = new_sl
+    group.target = new_tg
+    if alert_enabled is not None:
+        group.alert_enabled = bool(alert_enabled)
+    db.commit()
+    return group, None
+
+
+def delete_group(db, group):
+    db.query(TradeGroupLeg).filter(TradeGroupLeg.group_id == group.id).delete()
+    db.delete(group)
+    db.commit()
+
+
+# ----- legs --------------------------------------------------------------
+def add_leg(db, group, position, quantity=None):
+    """Tag a position (or a slice of it) into a group. Returns ``(leg, error)``.
+
+    ``quantity`` defaults to the position's full quantity. It must be non-zero,
+    point the same way as the position, and not exceed it in magnitude.
+    """
+    pos_qty = int(position['quantity'])
+    if pos_qty == 0:
+        return None, f"{position['tradingsymbol']} is closed (qty 0) — nothing to add."
+    qty = pos_qty if quantity is None else int(quantity)
+    err = validate_leg_quantity(qty, pos_qty, position['tradingsymbol'])
+    if err:
+        return None, err
+
+    existing = (
+        db.query(TradeGroupLeg)
+        .filter(
+            TradeGroupLeg.group_id == group.id,
+            TradeGroupLeg.tradingsymbol == position['tradingsymbol'],
+            TradeGroupLeg.product == position['product'],
+        )
+        .first()
+    )
+    if existing:
+        return None, (f"{position['tradingsymbol']} ({position['product']}) is already "
+                      f"in '{group.name}' — edit its quantity instead.")
+
+    leg = TradeGroupLeg(
+        group_id=group.id,
+        tradingsymbol=position['tradingsymbol'],
+        exchange=position['exchange'],
+        product=position['product'],
+        instrument_token=position['instrument_token'],
+        quantity=qty,
+        source_quantity=pos_qty,
+        avg_price=position['average_price'],
+    )
+    db.add(leg)
+    db.commit()
+    return leg, None
+
+
+def validate_leg_quantity(qty, pos_qty, symbol):
+    """Leg quantity must be non-zero, same-signed, and within the position."""
+    if qty == 0:
+        return f"{symbol}: quantity cannot be 0."
+    if (qty > 0) != (pos_qty > 0):
+        side = "long" if pos_qty > 0 else "short"
+        return (f"{symbol}: the position is {side} ({pos_qty}) — group quantity "
+                f"must have the same sign.")
+    if abs(qty) > abs(pos_qty):
+        return (f"{symbol}: group quantity {qty} exceeds the position quantity "
+                f"{pos_qty}.")
+    return None
+
+
+def set_leg_quantity(db, leg, quantity, live_map=None):
+    """Change a leg's quantity, validated against the live position if known."""
+    qty = int(quantity)
+    live = (live_map or {}).get((leg.tradingsymbol, leg.product))
+    basis = int(live['quantity']) if live and live['quantity'] else leg.source_quantity
+    err = validate_leg_quantity(qty, basis, leg.tradingsymbol)
+    if err:
+        return err
+    leg.quantity = qty
+    db.commit()
+    return None
+
+
+def remove_leg(db, leg):
+    db.delete(leg)
+    db.commit()
+
+
+def allocation_map(db, exclude_group_id=None):
+    """Total quantity already tagged per position, across all groups.
+
+    Used to warn when the same broker position is spread over several groups by
+    more than it actually holds.
+    """
+    q = db.query(TradeGroupLeg)
+    if exclude_group_id is not None:
+        q = q.filter(TradeGroupLeg.group_id != exclude_group_id)
+    out = {}
+    for leg in q.all():
+        key = (leg.tradingsymbol, leg.product)
+        out[key] = out.get(key, 0) + leg.quantity
+    return out
+
+
+# ----- marking -----------------------------------------------------------
+def leg_pnl(leg, live):
+    """``(pnl, state)`` for one leg. State is ``open`` / ``closed`` / ``missing``."""
+    if live is None:
+        return (leg.frozen_pnl or 0.0), 'missing'
+    if live['quantity'] == 0:
+        # Squared off — take this group's share of the position's realised P&L.
+        basis = abs(leg.source_quantity or 0)
+        share = (abs(leg.quantity) / basis) if basis else 0.0
+        return live['realised'] * share, 'closed'
+    return leg.quantity * (live['last_price'] - live['average_price']), 'open'
+
+
+def mark_group(db, group, live_map):
+    """Value a group against the live book.
+
+    Returns a dict with the group, its total P&L, per-leg detail, and counts —
+    the single shared marking path for both the UI and the poller.
+    """
+    detail = []
+    total = 0.0
+    open_legs = 0
+    for leg in legs_of(db, group.id):
+        live = live_map.get((leg.tradingsymbol, leg.product))
+        pnl, state = leg_pnl(leg, live)
+        total += pnl
+        if state == 'open':
+            open_legs += 1
+        detail.append({
+            'leg': leg,
+            'live': live,
+            'pnl': pnl,
+            'state': state,
+            'last_price': live['last_price'] if live else None,
+            'average_price': live['average_price'] if live else leg.avg_price,
+            'position_quantity': live['quantity'] if live else None,
+        })
+    return {
+        'group': group,
+        'pnl': total,
+        'legs': detail,
+        'n_legs': len(detail),
+        'open_legs': open_legs,
+    }
+
+
+def mark_all(db, live_map):
+    return [mark_group(db, g, live_map) for g in list_groups(db)]
+
+
+# ----- triggers ----------------------------------------------------------
+def evaluate(group, pnl):
+    """``(trigger_type, message)`` if the group breached a level, else ``(None, None)``."""
+    if group.target is not None and pnl >= group.target:
+        return TARGET, (f"🎯 Target reached — P&L ₹{pnl:,.2f} is at or above the "
+                        f"₹{group.target:,.2f} target.")
+    if group.stoploss is not None and pnl <= group.stoploss:
+        return STOPLOSS, (f"🛑 Stoploss hit — P&L ₹{pnl:,.2f} is at or below the "
+                          f"₹{group.stoploss:,.2f} stoploss.")
+    return None, None
+
+
+# ----- lifecycle ---------------------------------------------------------
+def deploy(db, group):
+    """Arm a group for monitoring. Returns ``(ok, error)``."""
+    legs = legs_of(db, group.id)
+    if not legs:
+        return False, f"'{group.name}' has no positions — add at least one before deploying."
+    if group.stoploss is None and group.target is None:
+        return False, f"'{group.name}' needs a stoploss or a target before deploying."
+    err = validate_levels(group.stoploss, group.target)
+    if err:
+        return False, err
+    group.status = DEPLOYED
+    group.deployed_at = datetime.datetime.utcnow()
+    group.trigger_type = None
+    group.trigger_message = None
+    group.triggered_at = None
+    group.triggered_pnl = None
+    group.notified_at = None
+    db.commit()
+    return True, None
+
+
+def undeploy(db, group):
+    """Return a group to draft, clearing any trigger state."""
+    group.status = DRAFT
+    group.trigger_type = None
+    group.trigger_message = None
+    group.triggered_at = None
+    group.triggered_pnl = None
+    group.notified_at = None
+    db.commit()
