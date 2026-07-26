@@ -10,6 +10,10 @@ It reuses the app's own persistence layer (:mod:`common.database`) so the token
 lands in exactly the same ``broker_config`` row the UI writes to, and clears the
 on-disk token-validity cache so the next page load re-checks immediately.
 
+Multi-account: the row is chosen by ``user_id`` — PC8006 updates the master
+account, any other id updates (or creates) that account's own row. So syncing a
+second Kite login never overwrites the master token.
+
 Auth: HTTP Basic. Credentials come from the environment
 (``ENCTOKEN_API_USER`` / ``ENCTOKEN_API_PASS``); the server refuses to start
 without them. Run it behind HTTPS in production — Basic auth + the enctoken are
@@ -34,8 +38,8 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from common.database import init_db, get_db, BrokerConfig
-from common.broker import clear_token_cache
+from common.database import init_db, get_db
+from common.broker import MASTER_USER_ID, normalise_user_id, save_account
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [enctoken-api] %(levelname)s %(message)s"
@@ -129,30 +133,24 @@ class Handler(BaseHTTPRequestHandler):
         if not enctoken:
             self._send_json(400, {"status": "error", "message": "enctoken is required"})
             return
-        if not user_id:
-            user_id = os.environ.get("ZERODHA_USER_ID", "PC8006")
-
+        # No user id in the payload: fall back to the configured login, then to
+        # the master account.
+        user_id = normalise_user_id(
+            user_id or os.environ.get("ZERODHA_USER_ID") or MASTER_USER_ID
+        )
         try:
             db = next(get_db())
             try:
-                cfg = (
-                    db.query(BrokerConfig)
-                    .filter(BrokerConfig.broker_name == "ZERODHA")
-                    .first()
-                )
-                if cfg:
-                    cfg.user_id = user_id
-                    cfg.enctoken = enctoken
-                else:
-                    db.add(
-                        BrokerConfig(
-                            broker_name="ZERODHA", user_id=user_id, enctoken=enctoken
-                        )
-                    )
-                db.commit()
+                # Routed by user id: PC8006 lands on the master row, any other
+                # account gets (or creates) its own — pushing a second login
+                # never clobbers the master token. save_account commits and
+                # clears the validity cache.
+                save_account(db, user_id, enctoken)
             finally:
                 db.close()
-            clear_token_cache()
+        except ValueError as exc:
+            self._send_json(400, {"status": "error", "message": str(exc)})
+            return
         except Exception as exc:  # noqa: BLE001 - report failure to the caller
             log.exception("failed to persist enctoken")
             self._send_json(500, {"status": "error", "message": str(exc)})
