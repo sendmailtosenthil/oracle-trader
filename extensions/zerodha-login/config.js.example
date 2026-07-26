@@ -1,14 +1,12 @@
-// Copy this file to `config.js` and (optionally) fill in your Kite account(s).
+// Copy this file to `config.js` and fill in your Kite account(s).
 // `config.js` is gitignored so your real secrets are never committed.
 //
-// You have two ways to configure accounts:
-//   1. The extension popup (recommended for multiple browsers): click the Z
-//      icon, add your account(s), and pick which one THIS browser uses. Stored
-//      per browser profile — 3 browsers can each use a different account.
-//   2. This file, as an optional shared source. List every account here; each
-//      browser then picks its account from the popup or the on-page picker.
-//
-// If you configure everything in the popup, leave this as an empty list.
+// List every account you use here — this file is the only place they are
+// defined. Each browser is then attached to ONE of them: the first time you
+// click the Z icon in a browser it asks which account that browser is for
+// (skipped when there's only one), and after that the icon just logs in.
+// The choice is stored per browser profile, so 3 browsers can each use a
+// different account off this same list.
 self.KITE_ACCOUNTS = [
   // { user: "PC8006", pass: "YOUR_KITE_PASSWORD", secret: "YOUR_TOTP_SECRET_BASE32" },
   // { user: "ZD2461", pass: "...", secret: "..." },

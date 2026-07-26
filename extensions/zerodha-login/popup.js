@@ -1,97 +1,68 @@
-// Popup for the Zerodha Kite auto-login extension.
+// Account picker for the Zerodha Kite auto-login extension.
 //
-// Lets you manage accounts and choose which one THIS browser profile uses.
-// Everything is stored in chrome.storage.local, which is per profile — so the
-// same extension in 3 browsers can log each into a different account with no
-// file edits. config.js (if present) is merged in as an optional shared source;
-// accounts added here are stored and can be deleted here.
-const KITE_URL = "https://kite.zerodha.com/";
+// This popup is shown only when the browser has no account attached yet (the
+// service worker clears the popup once one is chosen, so from then on clicking
+// the icon logs straight in). Picking an account here attaches this browser to
+// it and immediately starts the login.
+//
+// Accounts are read from config.js — there is no add/edit form. Any accounts
+// stored by an older version of the extension are still listed so an existing
+// browser keeps working.
 const CONFIG_ACCOUNTS = self.KITE_ACCOUNTS || (self.KITE_CREDS ? [self.KITE_CREDS] : []);
 const $ = (id) => document.getElementById(id);
 
 async function getState() {
   const s = await chrome.storage.local.get(["accounts", "selectedUser"]);
   return {
-    accounts: Array.isArray(s.accounts) ? s.accounts : [],
+    stored: Array.isArray(s.accounts) ? s.accounts : [],
     selectedUser: s.selectedUser || "",
   };
 }
 
-// Candidate list = config.js + popup-added, deduped (popup-added wins on clash).
-function mergedList(stored) {
+function userIds(stored) {
   const seen = new Set();
-  const list = [];
-  for (const a of [...stored, ...CONFIG_ACCOUNTS]) {
+  const out = [];
+  for (const a of [...CONFIG_ACCOUNTS, ...stored]) {
     const u = (a.user || "").toUpperCase();
     if (a.user && !seen.has(u)) {
       seen.add(u);
-      list.push(a);
+      out.push(a.user);
     }
   }
-  return list;
+  return out;
+}
+
+async function attachAndLogIn(user) {
+  await chrome.storage.local.set({ selectedUser: user });
+  chrome.runtime.sendMessage({ type: "kite-login" }, () => {
+    void chrome.runtime.lastError;
+    window.close();
+  });
 }
 
 async function render() {
-  const { accounts, selectedUser } = await getState();
-  const list = mergedList(accounts);
+  const { stored, selectedUser } = await getState();
+  const users = userIds(stored);
   const box = $("list");
   box.innerHTML = "";
-  if (!list.length) {
-    box.innerHTML = '<div class="muted">No accounts yet — add one below.</div>';
+
+  if (!users.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "No accounts in config.js — add them there, then reload the extension.";
+    box.appendChild(p);
     return;
   }
-  for (const a of list) {
-    const active = a.user.toUpperCase() === selectedUser.toUpperCase();
-    const row = document.createElement("div");
-    row.className = "row";
 
-    const use = document.createElement("button");
-    use.className = "use" + (active ? " active" : "");
-    use.textContent = (active ? "✓ " : "") + a.user + (active ? "  (this browser)" : "");
-    use.addEventListener("click", async () => {
-      await chrome.storage.local.set({ selectedUser: a.user });
-      render();
-    });
-    row.appendChild(use);
-
-    // Only accounts added via the popup can be deleted here (not config.js ones).
-    if (accounts.some((x) => x.user.toUpperCase() === a.user.toUpperCase())) {
-      const del = document.createElement("button");
-      del.className = "del";
-      del.textContent = "✕";
-      del.title = "Remove " + a.user;
-      del.addEventListener("click", async () => {
-        const next = accounts.filter((x) => x.user.toUpperCase() !== a.user.toUpperCase());
-        const patch = { accounts: next };
-        if (a.user.toUpperCase() === selectedUser.toUpperCase()) patch.selectedUser = "";
-        await chrome.storage.local.set(patch);
-        render();
-      });
-      row.appendChild(del);
-    }
-    box.appendChild(row);
+  for (const user of users) {
+    const active = user.toUpperCase() === selectedUser.toUpperCase();
+    const btn = document.createElement("button");
+    btn.className = "use" + (active ? " active" : "");
+    btn.textContent = (active ? "✓ " : "") + user + (active ? "  (this browser)" : "");
+    btn.addEventListener("click", () => attachAndLogIn(user));
+    box.appendChild(btn);
   }
 }
-
-$("add").addEventListener("click", async () => {
-  const user = $("user").value.trim();
-  const pass = $("pass").value;
-  const secret = $("secret").value.trim().replace(/\s+/g, "");
-  if (!user || !pass || !secret) {
-    $("status").style.color = "#c33";
-    $("status").textContent = "Fill in user id, password and TOTP secret.";
-    return;
-  }
-  const { accounts } = await getState();
-  const next = accounts.filter((x) => x.user.toUpperCase() !== user.toUpperCase());
-  next.push({ user, pass, secret });
-  // Saving an account also selects it for this browser (the common case).
-  await chrome.storage.local.set({ accounts: next, selectedUser: user });
-  $("user").value = $("pass").value = $("secret").value = "";
-  $("status").style.color = "#2a7";
-  $("status").textContent = "Saved " + user + " for this browser.";
-  render();
-});
 
 // ----- Oracle server sync ---------------------------------------------------
 // The push happens on its own after every login (see background.js); this panel
@@ -123,17 +94,6 @@ $("sync").addEventListener("click", () => {
     }
     showSync(status);
   });
-});
-
-$("login").addEventListener("click", async () => {
-  const tabs = await chrome.tabs.query({ url: "https://kite.zerodha.com/*" });
-  if (tabs.length) {
-    await chrome.tabs.update(tabs[0].id, { active: true, url: KITE_URL });
-    chrome.windows.update(tabs[0].windowId, { focused: true });
-  } else {
-    await chrome.tabs.create({ url: KITE_URL });
-  }
-  window.close();
 });
 
 render();

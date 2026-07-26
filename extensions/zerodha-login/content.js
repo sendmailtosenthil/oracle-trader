@@ -4,11 +4,10 @@
 //   1. Login form: fill User ID + Password, then click Login.
 //   2. 2FA form: generate a time-based OTP from the TOTP secret and submit it.
 //
-// Accounts can be configured two ways (the popup wins over config.js):
-//   • Extension popup — click the Z icon, add your account(s) and pick which one
-//     this browser uses. Stored in chrome.storage.local, which is PER browser
-//     profile, so 3 browsers each keep their own account with no file edits.
-//   • config.js — self.KITE_ACCOUNTS (a list) as an optional shared fallback.
+// Accounts are defined once in config.js (self.KITE_ACCOUNTS). Which of them
+// THIS browser logs in as is stored in chrome.storage.local (`selectedUser`),
+// which is per browser profile — so 3 browsers each keep their own account off
+// the same list. Accounts left in storage by older versions still count.
 //
 // If the extension can't tell which account this browser is for (no saved
 // choice, nothing prefilled, more than one candidate), it shows a small picker
