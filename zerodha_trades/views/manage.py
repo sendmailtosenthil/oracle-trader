@@ -78,8 +78,7 @@ def _open_positions_table(db, open_positions, lot_map):
 
     Every figure here is exactly what Kite reports — quantity, average, LTP and
     P&L are passed through untouched, with no group apportioning applied. Lot
-    Size is the only added column, and it is a property of the contract rather
-    than a calculation over the position.
+    Size restates that same quantity in lots.
     """
     if not open_positions:
         return
@@ -89,7 +88,7 @@ def _open_positions_table(db, open_positions, lot_map):
                 'Instrument': p['tradingsymbol'],
                 'Product': p['product'],
                 'Qty': p['quantity'],
-                'Lot Size': lot_map.get(p['tradingsymbol']),
+                'Lot Size': _lots(p['quantity'], lot_map.get(p['tradingsymbol'])),
                 'Avg': p['average_price'],
                 'LTP': p['last_price'],
                 'P&L': p['pnl'],
@@ -100,13 +99,27 @@ def _open_positions_table(db, open_positions, lot_map):
                 'Qty': st.column_config.NumberColumn(
                     "Qty", help="Position quantity as reported by Zerodha."),
                 'Lot Size': st.column_config.NumberColumn(
-                    "Lot Size", help="Exchange lot size for this contract."),
+                    "Lot Size",
+                    help="Quantity in lots — Qty ÷ the contract's lot size "
+                         "(e.g. -1300 ÷ 65 = -20 for NIFTY)."),
                 'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
                 'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
                 'P&L': st.column_config.NumberColumn(
                     "P&L", format="%.2f", help="P&L as reported by Zerodha."),
             },
         )
+
+
+def _lots(quantity, lot_size):
+    """Quantity restated in lots, or ``None`` when the lot size is unknown.
+
+    Whole numbers come back as ints so a 20-lot position reads ``-20``, not
+    ``-20.0``; anything that doesn't divide cleanly keeps two decimals.
+    """
+    if not lot_size:
+        return None
+    lots = quantity / lot_size
+    return int(lots) if lots == int(lots) else round(lots, 2)
 
 
 # ----- create ------------------------------------------------------------
