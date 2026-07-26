@@ -74,23 +74,22 @@ def _warn_imbalance(group):
 
 # ----- open positions ----------------------------------------------------
 def _open_positions_table(db, open_positions, lot_map):
-    """Read-only view of the live book, always on screen.
+    """Read-only mirror of the Zerodha book.
 
-    `Tagged` is how much of each position is already claimed across all groups,
-    so what is still free to assign is visible before creating a group.
+    Every figure here is exactly what Kite reports — quantity, average, LTP and
+    P&L are passed through untouched, with no group apportioning applied. Lot
+    Size is the only added column, and it is a property of the contract rather
+    than a calculation over the position.
     """
     if not open_positions:
         return
-    tagged = G.allocation_map(db)
     with st.expander(f"📋 Open positions ({len(open_positions)})", expanded=True):
         st.dataframe(
             [{
                 'Instrument': p['tradingsymbol'],
                 'Product': p['product'],
                 'Qty': p['quantity'],
-                'Lot': lot_map.get(p['tradingsymbol']),
-                'Lots': _lots(p['quantity'], lot_map.get(p['tradingsymbol'])),
-                'Tagged': tagged.get(P.position_key(p['tradingsymbol'], p['product']), 0),
+                'Lot Size': lot_map.get(p['tradingsymbol']),
                 'Avg': p['average_price'],
                 'LTP': p['last_price'],
                 'P&L': p['pnl'],
@@ -98,24 +97,16 @@ def _open_positions_table(db, open_positions, lot_map):
             hide_index=True,
             width='stretch',
             column_config={
+                'Qty': st.column_config.NumberColumn(
+                    "Qty", help="Position quantity as reported by Zerodha."),
+                'Lot Size': st.column_config.NumberColumn(
+                    "Lot Size", help="Exchange lot size for this contract."),
                 'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
                 'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
-                'P&L': st.column_config.NumberColumn("P&L", format="%.2f"),
-                'Lot': st.column_config.NumberColumn(
-                    "Lot", help="Exchange lot size for this contract."),
-                'Lots': st.column_config.NumberColumn(
-                    "Lots", help="Position quantity expressed in lots."),
-                'Tagged': st.column_config.NumberColumn(
-                    "Tagged", help="Quantity already assigned across all groups."),
+                'P&L': st.column_config.NumberColumn(
+                    "P&L", format="%.2f", help="P&L as reported by Zerodha."),
             },
         )
-
-
-def _lots(quantity, lot_size):
-    """Quantity in lots, or ``None`` when the lot size is unknown."""
-    if not lot_size:
-        return None
-    return round(quantity / lot_size, 2)
 
 
 # ----- create ------------------------------------------------------------
@@ -206,15 +197,10 @@ def _legs_editor(db, group, mark, live_map, lot_map):
     rows = []
     for item in mark['legs']:
         leg = item['leg']
-        lot = lot_map.get(leg.tradingsymbol)
         rows.append({
             'id': leg.id,
             'Instrument': leg.tradingsymbol,
-            'Product': leg.product,
-            'Position Qty': item['position_quantity'],
             'Group Qty': leg.quantity,
-            'Lot': lot,
-            'Lots': _lots(leg.quantity, lot),
             'Avg': item['average_price'],
             'LTP': item['last_price'],
             'P&L': item['pnl'],
@@ -222,17 +208,15 @@ def _legs_editor(db, group, mark, live_map, lot_map):
             'Remove': False,
         })
     # data_editor round-trips a list of dicts as a list of dicts — no DataFrame
-    # needed for tables this small.
+    # needed for tables this small. Avg and LTP are Zerodha's own numbers; only
+    # P&L is ours, scaled from them to Group Qty.
     edited = st.data_editor(
         rows,
         key=f"ztrade_legs_{group.id}",
         hide_index=True,
         width='stretch',
-        # Remove leads so it is never the column pushed off the right edge; Avg
-        # and Lot are dropped here since the Open positions table above carries
-        # them for every leg.
-        column_order=['Remove', 'Instrument', 'Position Qty', 'Group Qty',
-                      'Lots', 'LTP', 'P&L', 'State'],
+        column_order=['Remove', 'Instrument', 'Group Qty', 'Avg', 'LTP',
+                      'P&L', 'State'],
         column_config={
             'Remove': st.column_config.CheckboxColumn("Remove", width="small"),
             'Group Qty': st.column_config.NumberColumn(
@@ -240,11 +224,14 @@ def _legs_editor(db, group, mark, live_map, lot_map):
                 help="Signed quantity this group owns. Must match the position's "
                      "direction, stay within its size, and — for F&O — be a whole "
                      "number of lots."),
-            'Lots': st.column_config.NumberColumn(
-                "Lots", disabled=True, help="Group quantity expressed in lots."),
-            'Position Qty': st.column_config.NumberColumn("Position Qty", disabled=True),
-            'LTP': st.column_config.NumberColumn("LTP", format="%.2f", disabled=True),
-            'P&L': st.column_config.NumberColumn("P&L", format="%.2f", disabled=True),
+            'Avg': st.column_config.NumberColumn(
+                "Avg", format="%.2f", disabled=True,
+                help="Position average price from Zerodha."),
+            'LTP': st.column_config.NumberColumn(
+                "LTP", format="%.2f", disabled=True, help="Last price from Zerodha."),
+            'P&L': st.column_config.NumberColumn(
+                "P&L", format="%.2f", disabled=True,
+                help="This group's share: Group Qty × (LTP − Avg)."),
             'State': st.column_config.TextColumn("State", disabled=True),
             'Instrument': st.column_config.TextColumn("Instrument", disabled=True),
         },
@@ -289,8 +276,8 @@ def _add_positions(db, group, open_positions, lot_map):
                    if open_positions else "No open positions to add.")
         return
 
-    # How much of each position other groups have already claimed — shown so
-    # over-allocating the same leg across groups is visible, not silent.
+    # Still tracked, just not shown: cross-group over-allocation is reported as a
+    # warning when adding rather than as a column here.
     elsewhere = G.allocation_map(db, exclude_group_id=group.id)
     rows = [{
         'key': f"{p['tradingsymbol']}|{p['product']}",
@@ -299,8 +286,6 @@ def _add_positions(db, group, open_positions, lot_map):
         'Product': p['product'],
         'Position Qty': p['quantity'],
         'Qty for group': p['quantity'],   # default: the whole position
-        'Lot': lot_map.get(p['tradingsymbol']),
-        'In other groups': elsewhere.get(P.position_key(p['tradingsymbol'], p['product']), 0),
         'Avg': p['average_price'],
         'LTP': p['last_price'],
         'P&L': p['pnl'],
@@ -312,22 +297,21 @@ def _add_positions(db, group, open_positions, lot_map):
         hide_index=True,
         width='stretch',
         column_order=['Add', 'Instrument', 'Product', 'Position Qty', 'Qty for group',
-                      'Lot', 'In other groups', 'Avg', 'LTP', 'P&L'],
+                      'Avg', 'LTP', 'P&L'],
         column_config={
             'Add': st.column_config.CheckboxColumn("Add"),
             'Qty for group': st.column_config.NumberColumn(
                 "Qty for group", step=1,
                 help="Defaults to the full position. Reduce it to tag only part — "
                      "for F&O it must stay a whole number of lots."),
-            'Lot': st.column_config.NumberColumn(
-                "Lot", disabled=True, help="Exchange lot size for this contract."),
-            'Position Qty': st.column_config.NumberColumn("Position Qty", disabled=True),
-            'In other groups': st.column_config.NumberColumn("In other groups", disabled=True),
+            'Position Qty': st.column_config.NumberColumn(
+                "Position Qty", disabled=True, help="Quantity from Zerodha."),
             'Instrument': st.column_config.TextColumn("Instrument", disabled=True),
             'Product': st.column_config.TextColumn("Product", disabled=True),
             'Avg': st.column_config.NumberColumn("Avg", format="%.2f", disabled=True),
             'LTP': st.column_config.NumberColumn("LTP", format="%.2f", disabled=True),
-            'P&L': st.column_config.NumberColumn("P&L", format="%.2f", disabled=True),
+            'P&L': st.column_config.NumberColumn(
+                "P&L", format="%.2f", disabled=True, help="P&L from Zerodha."),
         },
     )
 
