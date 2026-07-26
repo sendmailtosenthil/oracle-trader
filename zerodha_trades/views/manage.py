@@ -194,8 +194,11 @@ def _levels_form(db, group):
 
 
 def _legs_editor(db, group, mark, live_map, lot_map):
-    st.markdown("**Positions in this group** — edit `Group Qty` in whole lots, "
-                "tick `Remove` to drop a leg, then **Apply changes**.")
+    st.markdown("**Positions in this group** — double-click `Group Qty` to edit it, "
+                "tick `Remove` to drop a leg, then press **Apply changes**.")
+    st.caption("Quantities move in whole lots and can't exceed the position, so a "
+               "single-lot leg has only one valid value — remove it rather than "
+               "shrink it.")
     if not mark['legs']:
         st.caption("None yet — add open positions below.")
         return
@@ -225,26 +228,25 @@ def _legs_editor(db, group, mark, live_map, lot_map):
         key=f"ztrade_legs_{group.id}",
         hide_index=True,
         width='stretch',
-        column_order=['Instrument', 'Product', 'Position Qty', 'Group Qty',
-                      'Lot', 'Lots', 'Avg', 'LTP', 'P&L', 'State', 'Remove'],
+        # Remove leads so it is never the column pushed off the right edge; Avg
+        # and Lot are dropped here since the Open positions table above carries
+        # them for every leg.
+        column_order=['Remove', 'Instrument', 'Position Qty', 'Group Qty',
+                      'Lots', 'LTP', 'P&L', 'State'],
         column_config={
+            'Remove': st.column_config.CheckboxColumn("Remove", width="small"),
             'Group Qty': st.column_config.NumberColumn(
                 "Group Qty", step=1,
                 help="Signed quantity this group owns. Must match the position's "
                      "direction, stay within its size, and — for F&O — be a whole "
                      "number of lots."),
-            'Lot': st.column_config.NumberColumn(
-                "Lot", disabled=True, help="Exchange lot size for this contract."),
             'Lots': st.column_config.NumberColumn(
                 "Lots", disabled=True, help="Group quantity expressed in lots."),
             'Position Qty': st.column_config.NumberColumn("Position Qty", disabled=True),
-            'Avg': st.column_config.NumberColumn("Avg", format="%.2f", disabled=True),
             'LTP': st.column_config.NumberColumn("LTP", format="%.2f", disabled=True),
             'P&L': st.column_config.NumberColumn("P&L", format="%.2f", disabled=True),
             'State': st.column_config.TextColumn("State", disabled=True),
             'Instrument': st.column_config.TextColumn("Instrument", disabled=True),
-            'Product': st.column_config.TextColumn("Product", disabled=True),
-            'Remove': st.column_config.CheckboxColumn("Remove"),
         },
     )
 

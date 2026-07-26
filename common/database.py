@@ -264,7 +264,10 @@ class TradeGroupSetting(Base):
     id = Column(Integer, primary_key=True)
     poll_seconds = Column(Integer, default=10)
     poller_enabled = Column(Boolean, default=True)
-    market_hours_only = Column(Boolean, default=True)
+    # Polling is confined to NSE trading days, 09:15-15:45 IST. test_mode is the
+    # deliberate override for trying things out off-hours; it is never the
+    # default and the dashboard nags while it is on.
+    test_mode = Column(Boolean, default=False)
     alert_email = Column(String, nullable=True)
     last_poll_at = Column(DateTime, nullable=True)
     last_poll_status = Column(String, nullable=True)
@@ -295,6 +298,7 @@ def _ensure_columns():
                             ("exit_mode", "VARCHAR DEFAULT 'trailing'"),
                             ('trail_gap', 'INTEGER DEFAULT 25')],
         'momentum_holdings': [('best_rank', 'INTEGER')],
+        'ztrade_settings': [('test_mode', 'BOOLEAN DEFAULT 0')],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

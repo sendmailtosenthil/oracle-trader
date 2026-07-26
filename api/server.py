@@ -176,6 +176,14 @@ def main():
     # start serving (same DB the Streamlit app uses).
     init_db()
 
+    # The Zerodha Trades position poller rides along in this process: it needs to
+    # run all day, and this service is already always-on with the DB layer
+    # loaded, so it costs a thread instead of a second interpreter.
+    if os.environ.get("ZTRADE_POLLER", "1") != "0":
+        from zerodha_trades.poller import start_background
+        start_background()
+        log.info("zerodha-trades poller thread started")
+
     host = os.environ.get("ENCTOKEN_API_HOST", "0.0.0.0")
     port = int(os.environ.get("ENCTOKEN_API_PORT", "8502"))
     httpd = ThreadingHTTPServer((host, port), Handler)

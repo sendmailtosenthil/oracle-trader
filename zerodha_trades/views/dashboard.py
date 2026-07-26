@@ -1,0 +1,124 @@
+"""Zerodha Trades dashboard — one card per group, three to a row.
+
+Reads the snapshot the poller writes rather than calling Kite itself, so the
+page costs a couple of small queries no matter how often it refreshes. The card
+grid lives in a fragment that reruns on its own, leaving the rest of the page
+(and the sidebar) alone.
+"""
+import datetime
+
+import streamlit as st
+
+from zerodha_trades import poller as PL
+from zerodha_trades.services import groups as G
+from zerodha_trades.services import positions as P
+from zerodha_trades.views import _helpers as H
+
+CARDS_PER_ROW = 3
+
+
+def render(db):
+    st.title("📦 Zerodha Trades — Dashboard")
+    H.inject_css()
+
+    _poller_bar(db)
+    _cards(db)
+
+
+def _poller_bar(db):
+    """Poller health, interval control, and the off-hours test override."""
+    settings = G.get_settings(db)
+    age = P.snapshot_age(db)
+    fresh = age is not None and (datetime.datetime.utcnow() - age).total_seconds() <= 120
+    window_ok, reason = PL.should_poll(settings)
+
+    c1, c2, c3, c4 = st.columns([3, 1.4, 1.4, 1.2])
+    icon = "🟢" if fresh else ("🟡" if window_ok else "⚪")
+    c1.caption(f"{icon} Last poll {H.ist(settings.last_poll_at)} IST · "
+               f"prices {H.ist(age)} IST · {settings.last_poll_status or 'no polls yet'}")
+
+    seconds = c2.number_input("Poll every (sec)", min_value=1, max_value=3600,
+                              value=int(settings.poll_seconds or 10), step=5,
+                              key="ztrade_poll_seconds")
+    enabled = c3.checkbox("Poller on", value=bool(settings.poller_enabled),
+                          key="ztrade_poller_on")
+    test_mode = c3.checkbox(
+        "Test mode", value=bool(settings.test_mode), key="ztrade_test_mode",
+        help="Poll outside 09:15-15:45 IST and on non-trading days. For testing "
+             "only — leave off so the poller stays quiet when the market is shut.")
+    if c4.button("Save", width='stretch'):
+        settings.poll_seconds = int(seconds)
+        settings.poller_enabled = bool(enabled)
+        settings.test_mode = bool(test_mode)
+        db.commit()
+        st.rerun()
+
+    if settings.test_mode:
+        st.warning("🧪 **Test mode is on** — polling ignores market hours and "
+                   "trading days. Turn it off when you're done testing.")
+    elif not window_ok and settings.poller_enabled:
+        st.info(f"😴 Poller idle — {reason}. It resumes automatically on the next "
+                "trading day at 09:15 IST. Tick **Test mode** to poll right now.")
+    elif window_ok and not fresh:
+        st.info("No recent poll. The poller runs inside the **oracle-api** service — "
+                "check `journalctl -u oracle-api -f` if this persists.")
+
+
+@st.fragment(run_every=10)
+def _cards(db):
+    """The card grid, rerunning on its own every 10s off the stored snapshot."""
+    all_groups = G.list_groups(db)
+    if not all_groups:
+        st.info("No groups yet — create one under **Group Management**.")
+        return
+
+    live_map = P.as_map(P.load_snapshot(db))
+    marks = [G.mark_group(db, g, live_map) for g in all_groups]
+
+    total = sum(m['pnl'] for m in marks)
+    st.markdown(f"**{len(marks)} group(s)** · combined P&L {H.colored_money(total)}")
+
+    for start in range(0, len(marks), CARDS_PER_ROW):
+        row = marks[start:start + CARDS_PER_ROW]
+        columns = st.columns(CARDS_PER_ROW)
+        for column, mark in zip(columns, row):
+            with column:
+                _card(mark)
+
+
+def _card(mark):
+    group, pnl = mark['group'], mark['pnl']
+    with st.container(border=True):
+        st.markdown(f"**{group.name}**  {H.STATUS_BADGE.get(group.status, group.status)}")
+        st.markdown(f"### {H.colored_money(pnl)}")
+        st.caption(f"{mark['n_legs']} instrument(s) · {mark['open_legs']} open")
+
+        # Plain text rather than st.metric: at one-third page width the metric
+        # font truncates a rupee figure to "-₹1…".
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;font-size:13px'>"
+            f"<span><span style='color:#888'>SL</span> "
+            f"<b>{H.money(group.stoploss)}</b></span>"
+            f"<span><span style='color:#888'>Target</span> "
+            f"<b>{H.money(group.target)}</b></span></div>",
+            unsafe_allow_html=True,
+        )
+        # Bar sits directly under the SL/Target row, which labels its two ends.
+        st.progress(_gauge(group, pnl))
+
+        if group.status == G.TRIGGERED and group.trigger_message:
+            st.error(f"{group.trigger_message}\n\n_{H.ist(group.triggered_at)} IST_")
+        elif group.status == G.DRAFT:
+            st.caption("⚪ Not deployed — no monitoring.")
+        elif not group.alert_enabled:
+            st.caption("🔕 Alerts off — monitored but silent.")
+        else:
+            st.caption(f"🔔 Alerts on · marked {H.ist(group.last_evaluated_at)} IST")
+
+
+def _gauge(group, pnl):
+    """Where P&L sits between stoploss and target, as 0.0-1.0."""
+    low, high = group.stoploss, group.target
+    if low is None or high is None or high <= low:
+        return 0.0
+    return min(1.0, max(0.0, (pnl - low) / (high - low)))

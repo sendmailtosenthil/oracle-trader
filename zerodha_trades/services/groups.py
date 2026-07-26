@@ -208,6 +208,11 @@ def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
     if abs(qty) > abs(pos_qty):
         return (f"{symbol}: group quantity {qty} exceeds the position quantity "
                 f"{pos_qty}.")
+    # A one-lot position has exactly one legal quantity, so say that outright
+    # rather than let the caller guess from a lot-multiple complaint.
+    if lot_size and lot_size > 1 and abs(pos_qty) == lot_size and abs(qty) != lot_size:
+        return (f"{symbol}: the position is a single lot ({pos_qty}), so {pos_qty} is "
+                f"the only valid group quantity. Tick Remove to drop the leg instead.")
     return validate_lot_multiple(qty, symbol, lot_size)
 
 
@@ -317,6 +322,50 @@ def evaluate(group, pnl):
         return STOPLOSS, (f"🛑 Stoploss hit — P&L ₹{pnl:,.2f} is at or below the "
                           f"₹{group.stoploss:,.2f} stoploss.")
     return None, None
+
+
+def apply_marks(db, marks, on_trigger=None):
+    """Record marked P&L and fire any newly breached triggers.
+
+    Called by the poller each cycle. Only deployed, alert-enabled groups can
+    trigger, and each fires once: the group flips to ``triggered`` and stamps
+    ``notified_at``, so a group sitting past its level does not re-alert every
+    ten seconds. Returns the list of groups that tripped on this pass.
+    """
+    now = datetime.datetime.utcnow()
+    fired = []
+    for mark in marks:
+        group, pnl = mark['group'], mark['pnl']
+        group.last_pnl = pnl
+        group.last_evaluated_at = now
+        if group.status != DEPLOYED or not group.alert_enabled:
+            continue
+        trigger_type, message = evaluate(group, pnl)
+        if not trigger_type:
+            continue
+        group.status = TRIGGERED
+        group.trigger_type = trigger_type
+        group.trigger_message = message
+        group.triggered_at = now
+        group.triggered_pnl = pnl
+        group.notified_at = now
+        fired.append((group, pnl, trigger_type, message))
+    db.commit()
+    # Notify only after the commit, so a slow or failing send cannot lose the
+    # fact that the group tripped.
+    if on_trigger:
+        for group, pnl, trigger_type, message in fired:
+            on_trigger(group, pnl, trigger_type, message)
+    return [f[0] for f in fired]
+
+
+def monitored(db):
+    """Groups the poller needs to value: deployed or already triggered."""
+    return (
+        db.query(TradeGroup)
+        .filter(TradeGroup.status.in_([DEPLOYED, TRIGGERED]))
+        .all()
+    )
 
 
 # ----- lifecycle ---------------------------------------------------------
