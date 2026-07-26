@@ -55,6 +55,14 @@ def fetch_for(db):
     return fetch(enctoken, user_id)
 
 
+def lot_sizes(enctoken, user_id, tradingsymbols):
+    """``{tradingsymbol: lot_size}`` for the given symbols (F&O contract size)."""
+    if not enctoken or not tradingsymbols:
+        return {}
+    client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
+    return fetch_with_retry(lambda: client.lot_size_map(tradingsymbols))
+
+
 def open_only(positions):
     """Only the legs still open (non-zero quantity)."""
     return [p for p in positions if p['quantity'] != 0]

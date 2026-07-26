@@ -150,17 +150,18 @@ def delete_group(db, group):
 
 
 # ----- legs --------------------------------------------------------------
-def add_leg(db, group, position, quantity=None):
+def add_leg(db, group, position, quantity=None, lot_size=None):
     """Tag a position (or a slice of it) into a group. Returns ``(leg, error)``.
 
     ``quantity`` defaults to the position's full quantity. It must be non-zero,
-    point the same way as the position, and not exceed it in magnitude.
+    point the same way as the position, not exceed it in magnitude, and — for
+    derivatives — be a whole number of lots.
     """
     pos_qty = int(position['quantity'])
     if pos_qty == 0:
         return None, f"{position['tradingsymbol']} is closed (qty 0) — nothing to add."
     qty = pos_qty if quantity is None else int(quantity)
-    err = validate_leg_quantity(qty, pos_qty, position['tradingsymbol'])
+    err = validate_leg_quantity(qty, pos_qty, position['tradingsymbol'], lot_size)
     if err:
         return None, err
 
@@ -192,8 +193,12 @@ def add_leg(db, group, position, quantity=None):
     return leg, None
 
 
-def validate_leg_quantity(qty, pos_qty, symbol):
-    """Leg quantity must be non-zero, same-signed, and within the position."""
+def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
+    """Leg quantity must be non-zero, same-signed, and within the position.
+
+    For derivatives it must also be a whole number of lots. ``lot_size`` of 1
+    (cash equity) or ``None`` (couldn't be resolved) skips that check.
+    """
     if qty == 0:
         return f"{symbol}: quantity cannot be 0."
     if (qty > 0) != (pos_qty > 0):
@@ -203,15 +208,27 @@ def validate_leg_quantity(qty, pos_qty, symbol):
     if abs(qty) > abs(pos_qty):
         return (f"{symbol}: group quantity {qty} exceeds the position quantity "
                 f"{pos_qty}.")
-    return None
+    return validate_lot_multiple(qty, symbol, lot_size)
 
 
-def set_leg_quantity(db, leg, quantity, live_map=None):
+def validate_lot_multiple(qty, symbol, lot_size):
+    """Reject a derivative quantity that isn't a whole number of lots."""
+    if not lot_size or lot_size <= 1 or abs(qty) % lot_size == 0:
+        return None
+    sign = -1 if qty < 0 else 1
+    lots_below = abs(qty) // lot_size
+    nearest = [sign * lots_below * lot_size, sign * (lots_below + 1) * lot_size]
+    options = " or ".join(str(n) for n in nearest if n)
+    return (f"{symbol}: quantity {qty} is not a whole number of lots — the lot "
+            f"size is {lot_size} ({abs(qty) / lot_size:.2f} lots). Use {options}.")
+
+
+def set_leg_quantity(db, leg, quantity, live_map=None, lot_size=None):
     """Change a leg's quantity, validated against the live position if known."""
     qty = int(quantity)
     live = (live_map or {}).get((leg.tradingsymbol, leg.product))
     basis = int(live['quantity']) if live and live['quantity'] else leg.source_quantity
-    err = validate_leg_quantity(qty, basis, leg.tradingsymbol)
+    err = validate_leg_quantity(qty, basis, leg.tradingsymbol, lot_size)
     if err:
         return err
     leg.quantity = qty

@@ -135,6 +135,36 @@ class ZerodhaClient:
         payload = self._get("/oms/portfolio/positions")
         return (payload.get("data") or {}).get("net") or []
 
+    def lot_size_map(self, tradingsymbols, timeout=60):
+        """Return ``{tradingsymbol: lot_size}`` for just the symbols asked for.
+
+        Streams the instruments dump and keeps only the handful of rows that
+        match, so the ~100k-row master is never materialised — same low-memory
+        approach as :meth:`nse_eq_token_map`. Equity rows report a lot size of
+        1; derivatives carry the real contract size (NIFTY 65, BANKNIFTY 35, …).
+        """
+        wanted = set(tradingsymbols or ())
+        if not wanted:
+            return {}
+        resp = self._session.get(_INSTRUMENTS_URL, timeout=timeout, stream=True)
+        resp.raise_for_status()
+        reader = csv.reader(codecs.iterdecode(resp.iter_lines(), "utf-8"))
+        try:
+            next(reader)  # header
+        except StopIteration:
+            return {}
+        out = {}
+        for row in reader:
+            if len(row) < 12 or row[2] not in wanted:
+                continue
+            try:
+                out[row[2]] = int(row[8])
+            except ValueError:
+                continue
+            if len(out) == len(wanted):
+                break  # found them all — stop reading the stream
+        return out
+
     # ----- instruments -------------------------------------------------
     def nse_eq_token_map(self, timeout=60):
         """Stream the instruments dump and return only ``{tradingsymbol: token}``

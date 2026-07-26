@@ -45,18 +45,24 @@ def render(db):
         H.clear_positions_cache()
         st.rerun()
 
-    _open_positions_table(db, open_positions)
+    all_groups = G.list_groups(db)
+    # Lot sizes for everything on screen: live positions plus any leg whose
+    # position the broker no longer reports.
+    lot_map = H.lot_sizes(db, [p['tradingsymbol'] for p in live]
+                          + [leg.tradingsymbol for g in all_groups
+                             for leg in G.legs_of(db, g.id)])
+
+    _open_positions_table(db, open_positions, lot_map)
     _create_form(db)
     st.divider()
 
-    all_groups = G.list_groups(db)
     if not all_groups:
         st.info("No groups yet — create one above, then tag open positions into it.")
         return
 
     st.subheader("Groups")
     for group in all_groups:
-        _group_panel(db, group, live_map, open_positions)
+        _group_panel(db, group, live_map, open_positions, lot_map)
 
 
 def _warn_imbalance(group):
@@ -67,7 +73,7 @@ def _warn_imbalance(group):
 
 
 # ----- open positions ----------------------------------------------------
-def _open_positions_table(db, open_positions):
+def _open_positions_table(db, open_positions, lot_map):
     """Read-only view of the live book, always on screen.
 
     `Tagged` is how much of each position is already claimed across all groups,
@@ -82,6 +88,8 @@ def _open_positions_table(db, open_positions):
                 'Instrument': p['tradingsymbol'],
                 'Product': p['product'],
                 'Qty': p['quantity'],
+                'Lot': lot_map.get(p['tradingsymbol']),
+                'Lots': _lots(p['quantity'], lot_map.get(p['tradingsymbol'])),
                 'Tagged': tagged.get(P.position_key(p['tradingsymbol'], p['product']), 0),
                 'Avg': p['average_price'],
                 'LTP': p['last_price'],
@@ -93,10 +101,21 @@ def _open_positions_table(db, open_positions):
                 'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
                 'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
                 'P&L': st.column_config.NumberColumn("P&L", format="%.2f"),
+                'Lot': st.column_config.NumberColumn(
+                    "Lot", help="Exchange lot size for this contract."),
+                'Lots': st.column_config.NumberColumn(
+                    "Lots", help="Position quantity expressed in lots."),
                 'Tagged': st.column_config.NumberColumn(
                     "Tagged", help="Quantity already assigned across all groups."),
             },
         )
+
+
+def _lots(quantity, lot_size):
+    """Quantity in lots, or ``None`` when the lot size is unknown."""
+    if not lot_size:
+        return None
+    return round(quantity / lot_size, 2)
 
 
 # ----- create ------------------------------------------------------------
@@ -131,7 +150,7 @@ def _create_form(db):
 
 
 # ----- one group ---------------------------------------------------------
-def _group_panel(db, group, live_map, open_positions):
+def _group_panel(db, group, live_map, open_positions, lot_map):
     mark = G.mark_group(db, group, live_map)
     badge = H.STATUS_BADGE.get(group.status, group.status)
     header = (f"**{group.name}** — {mark['n_legs']} instrument(s) · "
@@ -147,8 +166,8 @@ def _group_panel(db, group, live_map, open_positions):
             st.warning(f"{group.trigger_message} ({H.ist(group.triggered_at)} IST)")
 
         _levels_form(db, group)
-        _legs_editor(db, group, mark, live_map)
-        _add_positions(db, group, open_positions)
+        _legs_editor(db, group, mark, live_map, lot_map)
+        _add_positions(db, group, open_positions, lot_map)
         _lifecycle_bar(db, group)
 
 
@@ -174,8 +193,9 @@ def _levels_form(db, group):
             st.rerun()
 
 
-def _legs_editor(db, group, mark, live_map):
-    st.markdown("**Positions in this group**")
+def _legs_editor(db, group, mark, live_map, lot_map):
+    st.markdown("**Positions in this group** — edit `Group Qty` in whole lots, "
+                "tick `Remove` to drop a leg, then **Apply changes**.")
     if not mark['legs']:
         st.caption("None yet — add open positions below.")
         return
@@ -183,12 +203,15 @@ def _legs_editor(db, group, mark, live_map):
     rows = []
     for item in mark['legs']:
         leg = item['leg']
+        lot = lot_map.get(leg.tradingsymbol)
         rows.append({
             'id': leg.id,
             'Instrument': leg.tradingsymbol,
             'Product': leg.product,
             'Position Qty': item['position_quantity'],
             'Group Qty': leg.quantity,
+            'Lot': lot,
+            'Lots': _lots(leg.quantity, lot),
             'Avg': item['average_price'],
             'LTP': item['last_price'],
             'P&L': item['pnl'],
@@ -203,12 +226,17 @@ def _legs_editor(db, group, mark, live_map):
         hide_index=True,
         width='stretch',
         column_order=['Instrument', 'Product', 'Position Qty', 'Group Qty',
-                      'Avg', 'LTP', 'P&L', 'State', 'Remove'],
+                      'Lot', 'Lots', 'Avg', 'LTP', 'P&L', 'State', 'Remove'],
         column_config={
             'Group Qty': st.column_config.NumberColumn(
                 "Group Qty", step=1,
                 help="Signed quantity this group owns. Must match the position's "
-                     "direction and stay within its size."),
+                     "direction, stay within its size, and — for F&O — be a whole "
+                     "number of lots."),
+            'Lot': st.column_config.NumberColumn(
+                "Lot", disabled=True, help="Exchange lot size for this contract."),
+            'Lots': st.column_config.NumberColumn(
+                "Lots", disabled=True, help="Group quantity expressed in lots."),
             'Position Qty': st.column_config.NumberColumn("Position Qty", disabled=True),
             'Avg': st.column_config.NumberColumn("Avg", format="%.2f", disabled=True),
             'LTP': st.column_config.NumberColumn("LTP", format="%.2f", disabled=True),
@@ -233,7 +261,8 @@ def _legs_editor(db, group, mark, live_map):
                 continue
             new_qty = int(row['Group Qty'])
             if new_qty != leg.quantity:
-                err = G.set_leg_quantity(db, leg, new_qty, live_map)
+                err = G.set_leg_quantity(db, leg, new_qty, live_map,
+                                         lot_map.get(leg.tradingsymbol))
                 if err:
                     errors.append(err)
                 else:
@@ -248,7 +277,7 @@ def _legs_editor(db, group, mark, live_map):
         st.rerun()
 
 
-def _add_positions(db, group, open_positions):
+def _add_positions(db, group, open_positions, lot_map):
     st.markdown("**Add open positions**")
     taken = {(leg.tradingsymbol, leg.product) for leg in G.legs_of(db, group.id)}
     available = [p for p in open_positions
@@ -268,6 +297,7 @@ def _add_positions(db, group, open_positions):
         'Product': p['product'],
         'Position Qty': p['quantity'],
         'Qty for group': p['quantity'],   # default: the whole position
+        'Lot': lot_map.get(p['tradingsymbol']),
         'In other groups': elsewhere.get(P.position_key(p['tradingsymbol'], p['product']), 0),
         'Avg': p['average_price'],
         'LTP': p['last_price'],
@@ -280,12 +310,15 @@ def _add_positions(db, group, open_positions):
         hide_index=True,
         width='stretch',
         column_order=['Add', 'Instrument', 'Product', 'Position Qty', 'Qty for group',
-                      'In other groups', 'Avg', 'LTP', 'P&L'],
+                      'Lot', 'In other groups', 'Avg', 'LTP', 'P&L'],
         column_config={
             'Add': st.column_config.CheckboxColumn("Add"),
             'Qty for group': st.column_config.NumberColumn(
                 "Qty for group", step=1,
-                help="Defaults to the full position. Reduce it to tag only part."),
+                help="Defaults to the full position. Reduce it to tag only part — "
+                     "for F&O it must stay a whole number of lots."),
+            'Lot': st.column_config.NumberColumn(
+                "Lot", disabled=True, help="Exchange lot size for this contract."),
             'Position Qty': st.column_config.NumberColumn("Position Qty", disabled=True),
             'In other groups': st.column_config.NumberColumn("In other groups", disabled=True),
             'Instrument': st.column_config.TextColumn("Instrument", disabled=True),
@@ -308,7 +341,7 @@ def _add_positions(db, group, open_positions):
             if pos is None:
                 continue
             qty = int(row['Qty for group'])
-            _, err = G.add_leg(db, group, pos, qty)
+            _, err = G.add_leg(db, group, pos, qty, lot_map.get(pos['tradingsymbol']))
             if err:
                 errors.append(err)
                 continue

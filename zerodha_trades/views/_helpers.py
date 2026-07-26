@@ -84,6 +84,29 @@ def clear_positions_cache():
     _fetch_cached.clear()
 
 
+# Lot sizes only change when the exchange revises a contract, so an hours-long
+# TTL is plenty and keeps the instruments dump off the wire on every rerun.
+@st.cache_data(ttl=21600, max_entries=4, show_spinner=False)
+def _lot_sizes_cached(enctoken, user_id, symbols):
+    return positions.lot_sizes(enctoken, user_id, symbols)
+
+
+def lot_sizes(db, symbols):
+    """``{tradingsymbol: lot_size}``, or ``{}`` if they can't be resolved.
+
+    Degrading to an empty map is deliberate: quantity validation then skips the
+    whole-lots rule rather than blocking the user on a broker hiccup.
+    """
+    symbols = tuple(sorted({s for s in symbols if s}))
+    enctoken, user_id = positions.broker_credentials(db)
+    if not enctoken or not symbols:
+        return {}
+    try:
+        return _lot_sizes_cached(enctoken, user_id, symbols)
+    except Exception:  # noqa: BLE001 - validation relaxes, page still works
+        return {}
+
+
 def live_positions(db):
     """``(positions, fetched_at, error)`` — live book, snapshotted to the DB.
 
