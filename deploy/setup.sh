@@ -90,7 +90,7 @@ mkdir -p "$APP_DIR/logs"
 CRON_BLOCK=$(cat <<CRON
 # >>> oracle jobs (managed by deploy/setup.sh) >>>
 CRON_TZ=Asia/Kolkata
-29 15 * * * $WRAP relogin  >> $APP_DIR/logs/cron.log 2>&1
+10 8 * * * $WRAP relogin  >> $APP_DIR/logs/cron.log 2>&1
 35 15 * * * $WRAP signals  >> $APP_DIR/logs/cron.log 2>&1
 40 15 * * * $WRAP download >> $APP_DIR/logs/cron.log 2>&1
 0 16 * * *  $WRAP backup   >> $APP_DIR/logs/cron.log 2>&1
