@@ -11,20 +11,17 @@ from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
 
-# Groups the user is actively working on — these stay expanded across reruns.
-# Every rerun re-applies the expander's `expanded` prop, and the header carries
-# live P&L so its label changes constantly; without this a group would snap shut
-# on each button click.
-ACTIVE_GROUPS = "_ztrade_active_groups"
 
+def _panel_key(group_id):
+    """Session-state key holding a group panel's open/closed state.
 
-def _active_groups():
-    return st.session_state.setdefault(ACTIVE_GROUPS, set())
-
-
-def _mark_active(group_id):
-    """Keep this group open — call before any rerun triggered from its panel."""
-    _active_groups().add(group_id)
+    Giving the expander a key (with on_change) makes Streamlit persist the
+    user's own toggle as widget state, so it survives reruns and label changes.
+    Without it, the expander resets to the `expanded` argument whenever its
+    label changes — and the label carries live P&L, so groups snapped shut on
+    every button click.
+    """
+    return f"ztrade_grp_{group_id}"
 
 
 def render(db):
@@ -38,18 +35,12 @@ def render(db):
     live_map = P.as_map(live)
     open_positions = P.open_only(live)
 
-    head, collapse, refresh = st.columns([4, 1, 1])
+    head, refresh = st.columns([5, 1])
     head.caption(
         f"{len(open_positions)} open position(s) · "
         f"{len(live) - len(open_positions)} closed · "
         f"last fetched {H.ist(fetched_at)} IST"
     )
-    # Working groups are pinned open, so offer an explicit way to release them.
-    if collapse.button("🗕 Collapse all", width='stretch',
-                       disabled=not _active_groups(),
-                       help="Stop pinning the groups you have been working on."):
-        _active_groups().clear()
-        st.rerun()
     if refresh.button("🔄 Refresh", width='stretch'):
         H.clear_positions_cache()
         st.rerun()
@@ -131,9 +122,9 @@ def _create_form(db):
                 if err:
                     H.flash('error', err)
                 else:
-                    # Drop the user straight into the new group's position
-                    # picker rather than making them hunt for it below.
-                    _mark_active(group.id)
+                    # Open the new group once so its picker is on screen; from
+                    # then on the expander's own state is the user's to control.
+                    st.session_state[_panel_key(group.id)] = True
                     H.flash('success', f"Created '{group.name}' — pick its positions below.")
                     _warn_imbalance(group)
                 st.rerun()
@@ -146,12 +137,7 @@ def _group_panel(db, group, live_map, open_positions):
     header = (f"**{group.name}** — {mark['n_legs']} instrument(s) · "
               f"P&L {H.money(mark['pnl'])}")
 
-    # Open while being worked on, or when it is a draft still waiting for its
-    # positions.
-    expanded = (group.id in _active_groups()
-                or (group.status == G.DRAFT and not mark['legs']))
-
-    with st.expander(header, expanded=expanded):
+    with st.expander(header, key=_panel_key(group.id), on_change="rerun"):
         st.markdown(
             f"{badge} &nbsp; P&L {H.colored_money(mark['pnl'])} &nbsp;·&nbsp; "
             f"SL {H.money(group.stoploss)} &nbsp;·&nbsp; TGT {H.money(group.target)} "
@@ -185,7 +171,6 @@ def _levels_form(db, group):
             else:
                 H.flash('success', f"Saved '{name}'.")
                 _warn_imbalance(group)
-            _mark_active(group.id)
             st.rerun()
 
 
@@ -260,7 +245,6 @@ def _legs_editor(db, group, mark, live_map):
                                f"{removed} removed.")
         elif not errors:
             H.flash('info', "Nothing to apply — no quantities changed.")
-        _mark_active(group.id)
         st.rerun()
 
 
@@ -340,7 +324,6 @@ def _add_positions(db, group, open_positions):
                     + "; ".join(overflow))
         if added:
             H.flash('success', f"Added {added} position(s) to '{group.name}'.")
-        _mark_active(group.id)
         st.rerun()
 
 
@@ -356,13 +339,11 @@ def _lifecycle_bar(db, group):
                 _warn_imbalance(group)
             else:
                 H.flash('error', err)
-            _mark_active(group.id)
             st.rerun()
     else:
         if c1.button("⏸ Undeploy", key=f"ztrade_und_{group.id}", width='stretch'):
             G.undeploy(db, group)
             H.flash('info', f"'{group.name}' returned to draft.")
-            _mark_active(group.id)
             st.rerun()
         c4.caption(f"Deployed {H.ist(group.deployed_at)} IST")
 
@@ -373,7 +354,7 @@ def _lifecycle_bar(db, group):
     if c3.button("🗑 Delete", key=f"ztrade_del_{group.id}", width='stretch',
                  disabled=not confirm):
         name = group.name
-        _active_groups().discard(group.id)
+        st.session_state.pop(_panel_key(group.id), None)
         G.delete_group(db, group)
         H.flash('success', f"Deleted '{name}' and its legs.")
         st.rerun()
