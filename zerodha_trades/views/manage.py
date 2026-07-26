@@ -11,8 +11,20 @@ from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
 
-# Group id to force open — set right after creation so its picker is on screen.
-NEW_GROUP = "_ztrade_new_group"
+# Groups the user is actively working on — these stay expanded across reruns.
+# Every rerun re-applies the expander's `expanded` prop, and the header carries
+# live P&L so its label changes constantly; without this a group would snap shut
+# on each button click.
+ACTIVE_GROUPS = "_ztrade_active_groups"
+
+
+def _active_groups():
+    return st.session_state.setdefault(ACTIVE_GROUPS, set())
+
+
+def _mark_active(group_id):
+    """Keep this group open — call before any rerun triggered from its panel."""
+    _active_groups().add(group_id)
 
 
 def render(db):
@@ -26,12 +38,18 @@ def render(db):
     live_map = P.as_map(live)
     open_positions = P.open_only(live)
 
-    head, refresh = st.columns([5, 1])
+    head, collapse, refresh = st.columns([4, 1, 1])
     head.caption(
         f"{len(open_positions)} open position(s) · "
         f"{len(live) - len(open_positions)} closed · "
         f"last fetched {H.ist(fetched_at)} IST"
     )
+    # Working groups are pinned open, so offer an explicit way to release them.
+    if collapse.button("🗕 Collapse all", width='stretch',
+                       disabled=not _active_groups(),
+                       help="Stop pinning the groups you have been working on."):
+        _active_groups().clear()
+        st.rerun()
     if refresh.button("🔄 Refresh", width='stretch'):
         H.clear_positions_cache()
         st.rerun()
@@ -115,7 +133,7 @@ def _create_form(db):
                 else:
                     # Drop the user straight into the new group's position
                     # picker rather than making them hunt for it below.
-                    st.session_state[NEW_GROUP] = group.id
+                    _mark_active(group.id)
                     H.flash('success', f"Created '{group.name}' — pick its positions below.")
                     _warn_imbalance(group)
                 st.rerun()
@@ -128,10 +146,9 @@ def _group_panel(db, group, live_map, open_positions):
     header = (f"**{group.name}** — {mark['n_legs']} instrument(s) · "
               f"P&L {H.money(mark['pnl'])}")
 
-    # Open when there is something to do: a freshly created group, or any draft
-    # still waiting for its positions. Once legs are in, it stops forcing open
-    # so the user's own collapse sticks.
-    expanded = (st.session_state.get(NEW_GROUP) == group.id
+    # Open while being worked on, or when it is a draft still waiting for its
+    # positions.
+    expanded = (group.id in _active_groups()
                 or (group.status == G.DRAFT and not mark['legs']))
 
     with st.expander(header, expanded=expanded):
@@ -168,6 +185,7 @@ def _levels_form(db, group):
             else:
                 H.flash('success', f"Saved '{name}'.")
                 _warn_imbalance(group)
+            _mark_active(group.id)
             st.rerun()
 
 
@@ -242,6 +260,7 @@ def _legs_editor(db, group, mark, live_map):
                                f"{removed} removed.")
         elif not errors:
             H.flash('info', "Nothing to apply — no quantities changed.")
+        _mark_active(group.id)
         st.rerun()
 
 
@@ -321,9 +340,7 @@ def _add_positions(db, group, open_positions):
                     + "; ".join(overflow))
         if added:
             H.flash('success', f"Added {added} position(s) to '{group.name}'.")
-            # Job done — stop forcing this group open so collapsing it sticks.
-            if st.session_state.get(NEW_GROUP) == group.id:
-                st.session_state.pop(NEW_GROUP, None)
+        _mark_active(group.id)
         st.rerun()
 
 
@@ -339,11 +356,13 @@ def _lifecycle_bar(db, group):
                 _warn_imbalance(group)
             else:
                 H.flash('error', err)
+            _mark_active(group.id)
             st.rerun()
     else:
         if c1.button("⏸ Undeploy", key=f"ztrade_und_{group.id}", width='stretch'):
             G.undeploy(db, group)
             H.flash('info', f"'{group.name}' returned to draft.")
+            _mark_active(group.id)
             st.rerun()
         c4.caption(f"Deployed {H.ist(group.deployed_at)} IST")
 
@@ -354,6 +373,7 @@ def _lifecycle_bar(db, group):
     if c3.button("🗑 Delete", key=f"ztrade_del_{group.id}", width='stretch',
                  disabled=not confirm):
         name = group.name
+        _active_groups().discard(group.id)
         G.delete_group(db, group)
         H.flash('success', f"Deleted '{name}' and its legs.")
         st.rerun()
