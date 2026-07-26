@@ -232,6 +232,20 @@ function showPicker(list) {
   document.body.appendChild(box);
 }
 
+// ----- server sync ----------------------------------------------------------
+// Tell the service worker there's a live Kite session so it can push the
+// enctoken to Project Oracle. The worker reads the (HttpOnly) cookie itself and
+// skips tokens it has already sent, so calling this on every page load is cheap.
+function announceSession(reason) {
+  try {
+    chrome.runtime.sendMessage({ type: "oracle-sync", reason }, () => {
+      void chrome.runtime.lastError; // worker asleep / extension reloading
+    });
+  } catch (e) {
+    /* context invalidated — nothing to do */
+  }
+}
+
 // Kite shows the login + 2FA forms at the site root ("/"); once authenticated it
 // redirects to an app route. If we're not at the login URL, we're already logged
 // in — do nothing (and never risk typing into a dashboard field).
@@ -241,6 +255,11 @@ const atLoginUrl = () => {
 };
 
 async function run() {
+  // Landing on an app page means this browser holds a session — report it
+  // before anything else, including when no accounts are configured here (the
+  // login may have been typed by hand).
+  if (isLoggedIn()) announceSession("page-load");
+
   const { list, selectedUser } = await loadState();
   if (!list.length) {
     console.warn("[zerodha-login] No accounts configured — click the Z icon to add one.");

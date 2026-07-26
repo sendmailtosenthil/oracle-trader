@@ -17,6 +17,5 @@ token.json
 # Bare-metal deploy: job logs
 logs/
 # Chrome extension local credentials (real password/secret — never commit)
-extensions/enctoken-sync/config.js
 extensions/oracle-login/config.js
 extensions/zerodha-login/config.js

@@ -14,7 +14,11 @@
   button.primary { width: 100%; padding: 8px; border: 0; border-radius: 5px; cursor: pointer; font-weight: 600; }
   #add { background: #eef; color: #224; margin-top: 4px; }
   #login { background: #ff5722; color: #fff; margin-top: 10px; }
+  #sync { background: #eef; color: #224; margin-top: 6px; }
   #status { min-height: 1em; margin-top: 6px; color: #2a7; font-size: 12px; }
+  #syncStatus { font-size: 11px; margin: 2px 0 0; }
+  .ok { color: #1b7f2e; }
+  .err { color: #c62828; }
   .muted { color: #999; font-size: 11px; margin-top: 10px; }
 </style>
 
@@ -34,6 +38,13 @@
 
 <div id="status"></div>
 <button id="login" class="primary">Open Kite &amp; log in</button>
+
+<hr />
+<div style="font-weight:600;">Oracle server sync</div>
+<p class="sub" style="margin:2px 0 0;">Sent automatically after every Kite login.</p>
+<p id="syncStatus" class="muted">—</p>
+<button id="sync" class="primary">Sync enctoken now</button>
+
 <p class="muted">Stored only in this browser profile (chrome.storage). Each browser keeps its own account.</p>
 
 <script src="config.js"></script>

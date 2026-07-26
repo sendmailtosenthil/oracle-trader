@@ -16,3 +16,16 @@ self.KITE_ACCOUNTS = [
 
 // A single account (legacy form) still works too:
 // self.KITE_CREDS = { user: "PC8006", pass: "...", secret: "..." };
+
+// --- Project Oracle server ---------------------------------------------------
+// Where to push the enctoken after every Kite login. Must match the enctoken
+// API's .env (ENCTOKEN_API_USER / ENCTOKEN_API_PASS). Leave this out entirely
+// and the extension just logs you in without syncing.
+//
+// The host must also appear in manifest.json `host_permissions` — a Chrome
+// extension can only call hosts listed there.
+self.ORACLE_API = {
+  base: "http://YOUR_VPS_HOST:8502", // no trailing slash
+  user: "oracle", // == ENCTOKEN_API_USER on the server
+  pass: "YOUR_ENCTOKEN_API_PASS", // == ENCTOKEN_API_PASS on the server
+};

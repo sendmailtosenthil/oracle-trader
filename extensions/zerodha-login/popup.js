@@ -93,6 +93,38 @@ $("add").addEventListener("click", async () => {
   render();
 });
 
+// ----- Oracle server sync ---------------------------------------------------
+// The push happens on its own after every login (see background.js); this panel
+// just reports the last result and offers a manual retry.
+function showSync(status) {
+  const el = $("syncStatus");
+  if (!status) {
+    el.className = "muted";
+    el.textContent = "No sync yet — log in to Kite.";
+    return;
+  }
+  const when = new Date(status.at).toLocaleTimeString();
+  el.className = status.ok ? "ok" : "err";
+  el.textContent = `${status.ok ? "✓" : "✗"} ${status.message} (${when})`;
+}
+
+async function renderSync() {
+  const { oracleSync } = await chrome.storage.local.get("oracleSync");
+  showSync(oracleSync);
+}
+
+$("sync").addEventListener("click", () => {
+  $("syncStatus").className = "muted";
+  $("syncStatus").textContent = "Syncing…";
+  chrome.runtime.sendMessage({ type: "oracle-sync", reason: "popup", force: true }, (status) => {
+    if (chrome.runtime.lastError) {
+      showSync({ ok: false, message: chrome.runtime.lastError.message, at: new Date().toISOString() });
+      return;
+    }
+    showSync(status);
+  });
+});
+
 $("login").addEventListener("click", async () => {
   const tabs = await chrome.tabs.query({ url: "https://kite.zerodha.com/*" });
   if (tabs.length) {
@@ -105,3 +137,4 @@ $("login").addEventListener("click", async () => {
 });
 
 render();
+renderSync();
