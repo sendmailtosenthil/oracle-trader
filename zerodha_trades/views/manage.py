@@ -11,9 +11,13 @@ from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
 
+# Group id to force open — set right after creation so its picker is on screen.
+NEW_GROUP = "_ztrade_new_group"
+
 
 def render(db):
     st.title("📦 Zerodha Trades — Group Management")
+    H.inject_css()
     H.render_flash()
 
     live, fetched_at, error = H.live_positions(db)
@@ -32,6 +36,7 @@ def render(db):
         H.clear_positions_cache()
         st.rerun()
 
+    _open_positions_table(db, open_positions)
     _create_form(db)
     st.divider()
 
@@ -43,6 +48,39 @@ def render(db):
     st.subheader("Groups")
     for group in all_groups:
         _group_panel(db, group, live_map, open_positions)
+
+
+# ----- open positions ----------------------------------------------------
+def _open_positions_table(db, open_positions):
+    """Read-only view of the live book, always on screen.
+
+    `Tagged` is how much of each position is already claimed across all groups,
+    so what is still free to assign is visible before creating a group.
+    """
+    if not open_positions:
+        return
+    tagged = G.allocation_map(db)
+    with st.expander(f"📋 Open positions ({len(open_positions)})", expanded=True):
+        st.dataframe(
+            [{
+                'Instrument': p['tradingsymbol'],
+                'Product': p['product'],
+                'Qty': p['quantity'],
+                'Tagged': tagged.get(P.position_key(p['tradingsymbol'], p['product']), 0),
+                'Avg': p['average_price'],
+                'LTP': p['last_price'],
+                'P&L': p['pnl'],
+            } for p in open_positions],
+            hide_index=True,
+            width='stretch',
+            column_config={
+                'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
+                'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
+                'P&L': st.column_config.NumberColumn("P&L", format="%.2f"),
+                'Tagged': st.column_config.NumberColumn(
+                    "Tagged", help="Quantity already assigned across all groups."),
+            },
+        )
 
 
 # ----- create ------------------------------------------------------------
@@ -64,9 +102,14 @@ def _create_form(db):
             alert_enabled = c4.checkbox("Alerts enabled", value=True)
 
             if st.form_submit_button("Create group", type="primary"):
-                _, err = G.create_group(db, name, stoploss, target, alert_enabled)
-                H.flash('error', err) if err else H.flash(
-                    'success', f"Created '{name.strip()}'.")
+                group, err = G.create_group(db, name, stoploss, target, alert_enabled)
+                if err:
+                    H.flash('error', err)
+                else:
+                    # Drop the user straight into the new group's position
+                    # picker rather than making them hunt for it below.
+                    st.session_state[NEW_GROUP] = group.id
+                    H.flash('success', f"Created '{group.name}' — pick its positions below.")
                 st.rerun()
 
 
@@ -77,7 +120,13 @@ def _group_panel(db, group, live_map, open_positions):
     header = (f"**{group.name}** — {mark['n_legs']} instrument(s) · "
               f"P&L {H.money(mark['pnl'])}")
 
-    with st.expander(header, expanded=(group.status == G.DRAFT)):
+    # Open when there is something to do: a freshly created group, or any draft
+    # still waiting for its positions. Once legs are in, it stops forcing open
+    # so the user's own collapse sticks.
+    expanded = (st.session_state.get(NEW_GROUP) == group.id
+                or (group.status == G.DRAFT and not mark['legs']))
+
+    with st.expander(header, expanded=expanded):
         st.markdown(
             f"{badge} &nbsp; P&L {H.colored_money(mark['pnl'])} &nbsp;·&nbsp; "
             f"SL {H.money(group.stoploss)} &nbsp;·&nbsp; TGT {H.money(group.target)} "
@@ -260,6 +309,9 @@ def _add_positions(db, group, open_positions):
                     + "; ".join(overflow))
         if added:
             H.flash('success', f"Added {added} position(s) to '{group.name}'.")
+            # Job done — stop forcing this group open so collapsing it sticks.
+            if st.session_state.get(NEW_GROUP) == group.id:
+                st.session_state.pop(NEW_GROUP, None)
         st.rerun()
 
 

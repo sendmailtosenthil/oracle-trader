@@ -15,6 +15,21 @@ STATUS_BADGE = {
 }
 
 
+# Inside a form, Streamlit paints a "Press Enter to submit form" hint as an
+# overlay *within* the input box. In the narrow stoploss/target columns it sits
+# straight on top of the number being typed. Hiding it keeps the value legible;
+# Enter still submits, and the forms have explicit buttons anyway.
+_CSS = """
+<style>
+div[data-testid="InputInstructions"] { display: none !important; }
+</style>
+"""
+
+
+def inject_css():
+    st.markdown(_CSS, unsafe_allow_html=True)
+
+
 _FLASH = "_ztrade_flash"
 
 
