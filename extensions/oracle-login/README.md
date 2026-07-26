@@ -26,8 +26,10 @@ Click the toolbar icon → a tab opens to the Oracle app and logs in. If a tab i
 already open it's focused and reloaded so the login re-runs.
 
 ## Notes
-- Streamlit login state is per browser session, so it re-logs in on each reload —
-  that's expected; this extension just automates it.
+- The app now remembers a login for a few days via a session cookie (see
+  `ORACLE_SESSION_DAYS`), so most visits are already authenticated and this
+  extension does nothing — it exits when no login form is present. It still
+  covers the first login and anything after the session expires or you log out.
 - If the auto-fill ever stops working after a Streamlit upgrade, the input/button
   selectors in `content.js` may need adjusting (it targets `input[type=password]`,
   `input[aria-label="Username"]`, and the button labelled `Login`).

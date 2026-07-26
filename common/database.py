@@ -61,6 +61,17 @@ class PendingSwitch(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     status = Column(String, default='PENDING') # 'PENDING', 'COMPLETED'
 
+class AuthSession(Base):
+    # A remembered browser login. Only the SHA-256 of the token is stored, so a
+    # copy of the database does not hand over live sessions.
+    __tablename__ = 'auth_sessions'
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    username = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+
+
 class BrokerConfig(Base):
     __tablename__ = 'broker_config'
     id = Column(Integer, primary_key=True)
