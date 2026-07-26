@@ -81,6 +81,37 @@ def validate_levels(stoploss, target):
     return None
 
 
+# How far apart the risk and reward legs may sit before it looks like a typo.
+LEVEL_BALANCE_TOLERANCE = 0.05
+
+
+def levels_imbalance(stoploss, target, tolerance=LEVEL_BALANCE_TOLERANCE):
+    """Advisory message when risk and reward are lopsided, else ``None``.
+
+    Compares the *magnitudes* of the two levels: a stoploss of -1,50,000 against
+    a 25,000 target is far more often a mistyped zero than an intended 6:1 risk.
+    Purely a warning — the group still saves.
+    """
+    if stoploss is None or target is None:
+        return None
+    risk, reward = abs(stoploss), abs(target)
+    larger = max(risk, reward)
+    if larger == 0:
+        return None
+    gap = abs(risk - reward) / larger
+    if gap <= tolerance:
+        return None
+
+    head = (f"Stoploss ₹{risk:,.2f} and target ₹{reward:,.2f} differ by "
+            f"{gap * 100:.0f}%, over the {tolerance * 100:.0f}% tolerance")
+    smaller = min(risk, reward)
+    if not smaller:
+        return f"{head} — one side is zero. Check for a mistyped value."
+    side = "Risking" if risk > reward else "Targeting"
+    return (f"{head} — {side.lower()} {larger / smaller:.1f}× the other side. "
+            "Check for a mistyped zero.")
+
+
 def update_group(db, group, name=None, stoploss=..., target=..., alert_enabled=None):
     """Patch a group's editable fields. Returns ``(group, error)``.
 

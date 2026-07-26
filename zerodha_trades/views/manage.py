@@ -50,6 +50,13 @@ def render(db):
         _group_panel(db, group, live_map, open_positions)
 
 
+def _warn_imbalance(group):
+    """Queue the lopsided-levels advisory, if the group's levels trip it."""
+    note = G.levels_imbalance(group.stoploss, group.target)
+    if note:
+        H.flash('warning', f"⚠️ '{group.name}': {note}")
+
+
 # ----- open positions ----------------------------------------------------
 def _open_positions_table(db, open_positions):
     """Read-only view of the live book, always on screen.
@@ -110,6 +117,7 @@ def _create_form(db):
                     # picker rather than making them hunt for it below.
                     st.session_state[NEW_GROUP] = group.id
                     H.flash('success', f"Created '{group.name}' — pick its positions below.")
+                    _warn_imbalance(group)
                 st.rerun()
 
 
@@ -155,7 +163,11 @@ def _levels_form(db, group):
         if st.form_submit_button("Save settings"):
             _, err = G.update_group(db, group, name=name, stoploss=stoploss,
                                     target=target, alert_enabled=alert_enabled)
-            H.flash('error', err) if err else H.flash('success', f"Saved '{name}'.")
+            if err:
+                H.flash('error', err)
+            else:
+                H.flash('success', f"Saved '{name}'.")
+                _warn_imbalance(group)
             st.rerun()
 
 
@@ -322,8 +334,11 @@ def _lifecycle_bar(db, group):
         if c1.button("🚀 Deploy", key=f"ztrade_dep_{group.id}", type="primary",
                      width='stretch'):
             ok, err = G.deploy(db, group)
-            H.flash('success', f"'{group.name}' deployed — now monitored.") if ok \
-                else H.flash('error', err)
+            if ok:
+                H.flash('success', f"'{group.name}' deployed — now monitored.")
+                _warn_imbalance(group)
+            else:
+                H.flash('error', err)
             st.rerun()
     else:
         if c1.button("⏸ Undeploy", key=f"ztrade_und_{group.id}", width='stretch'):
