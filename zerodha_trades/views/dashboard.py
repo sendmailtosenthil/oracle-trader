@@ -16,6 +16,9 @@ from zerodha_trades.views import _helpers as H
 
 CARDS_PER_ROW = 3
 
+# Id of the group whose breakdown dialog is open, if any.
+OPEN_DIALOG = "_ztrade_open_dialog"
+
 
 def render(db):
     st.title("📦 Zerodha Trades — Dashboard")
@@ -23,6 +26,23 @@ def render(db):
 
     _poller_bar(db)
     _cards(db)
+    # Rendered from the main body, not from the auto-refreshing fragment: a
+    # fragment rerun every 10s fights the dialog's lifecycle, leaving Close
+    # unable to dismiss it.
+    _maybe_dialog(db)
+
+
+def _maybe_dialog(db):
+    """Open the breakdown dialog for whichever card asked for it."""
+    group_id = st.session_state.get(OPEN_DIALOG)
+    if group_id is None:
+        return
+    group = G.get_group(db, group_id)
+    if group is None:                      # deleted from another tab
+        st.session_state.pop(OPEN_DIALOG, None)
+        return
+    live_map = P.as_map(P.load_snapshot(db))
+    _positions_dialog(G.mark_group(db, group, live_map))
 
 
 def _poller_bar(db):
@@ -114,6 +134,63 @@ def _card(mark):
             st.caption("🔕 Alerts off — monitored but silent.")
         else:
             st.caption(f"🔔 Alerts on · marked {H.ist(group.last_evaluated_at)} IST")
+
+        if st.button(f"View {mark['n_legs']} position(s)", key=f"ztrade_open_{group.id}",
+                     width='stretch'):
+            st.session_state[OPEN_DIALOG] = group.id
+            st.rerun()   # full rerun: the dialog is rendered by the main body
+
+
+def _forget_dialog():
+    """Clear the open-dialog flag when the user dismisses via the X or Esc.
+
+    Without this the flag survives the dismissal and the next full rerun — the
+    poller-bar Save, say — would pop the dialog straight back open.
+    """
+    st.session_state.pop(OPEN_DIALOG, None)
+
+
+@st.dialog("Group positions", width="large", on_dismiss=_forget_dialog)
+def _positions_dialog(mark):
+    """Per-instrument breakdown behind a card's P&L."""
+    group, pnl = mark['group'], mark['pnl']
+    st.markdown(f"**{group.name}**  {H.STATUS_BADGE.get(group.status, group.status)}"
+                f" &nbsp;·&nbsp; SL {H.money(group.stoploss)}"
+                f" &nbsp;·&nbsp; Target {H.money(group.target)}")
+
+    if not mark['legs']:
+        st.info("This group has no positions yet.")
+    else:
+        st.dataframe(
+            [{
+                'Instrument': item['leg'].tradingsymbol,
+                'Group Qty': item['leg'].quantity,
+                'Avg': item['average_price'],
+                'LTP': item['last_price'],
+                'P&L': item['pnl'],
+                'State': item['state'],
+            } for item in mark['legs']],
+            hide_index=True,
+            width='stretch',
+            column_config={
+                'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
+                'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
+                'P&L': st.column_config.NumberColumn(
+                    "P&L", format="%.2f",
+                    help="Group Qty × (LTP − Avg) — this group's share of the leg."),
+            },
+        )
+        st.markdown(f"### Total {H.colored_money(pnl)}")
+        # Streamlit will not re-render a dialog that is already open, so this
+        # is the book as of the moment it was opened even though the cards
+        # behind it keep ticking. Timestamp it rather than imply it is live.
+        st.caption(f"{mark['n_legs']} instrument(s) · {mark['open_legs']} open · "
+                   f"priced {H.ist(group.last_evaluated_at)} IST — reopen for a "
+                   f"newer mark.")
+
+    if st.button("Close", key=f"ztrade_dlgclose_{group.id}"):
+        st.session_state.pop(OPEN_DIALOG, None)
+        st.rerun()
 
 
 def _gauge(group, pnl):
