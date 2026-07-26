@@ -1,5 +1,9 @@
 """Group Management — create groups and tag live Kite positions into them.
 
+One tab per configured Zerodha account. A group belongs to exactly one account:
+two logins are separate books, so a group never spans them. Everything inside a
+tab — the position list, the groups, the pickers — is that account's alone.
+
 Each group is a basket of positions (or slices of them) with its own rupee
 stoploss / target. Groups start as drafts; deploying one arms it for monitoring.
 Only *open* positions (non-zero quantity) can be added — a leg that later gets
@@ -29,32 +33,43 @@ def render(db):
     H.inject_css()
     H.render_flash()
 
-    live, fetched_at, error = H.live_positions(db)
-    if error:
-        st.error(error)
-    live_map = P.as_map(live)
-    open_positions = P.open_only(live)
+    books, fetched_at = H.live_positions_by_account(db)
+    if not books:
+        st.error("No Zerodha accounts configured — add one in **Broker Setup**.")
+        return
 
     head, refresh = st.columns([5, 1])
-    head.caption(
-        f"{len(open_positions)} open position(s) · "
-        f"{len(live) - len(open_positions)} closed · "
-        f"last fetched {H.ist(fetched_at)} IST"
-    )
+    head.caption(f"{len(books)} account(s) · fetched in parallel "
+                 f"(max {P.MAX_PARALLEL_ACCOUNTS} at a time) · "
+                 f"last fetched {H.ist(fetched_at)} IST")
     if refresh.button("🔄 Refresh", width='stretch'):
         H.clear_positions_cache()
         st.rerun()
 
+    # One lookup for every symbol on the page: the instruments master is global,
+    # so accounts share it rather than each paying for its own fetch.
     all_groups = G.list_groups(db)
-    # Lot sizes for everything on screen: live positions plus any leg whose
-    # position the broker no longer reports.
-    lot_map = H.lot_sizes(db, [p['tradingsymbol'] for p in live]
-                          + [leg.tradingsymbol for g in all_groups
-                             for leg in G.legs_of(db, g.id)])
+    lot_map = H.lot_sizes(db, [
+        p['tradingsymbol'] for res in books.values() for p in res['positions']
+    ] + [leg.tradingsymbol for g in all_groups for leg in G.legs_of(db, g.id)])
 
-    # Quantities can't be validated without lot sizes, and an unverified
-    # quantity is refused rather than waved through — so say so up front instead
-    # of letting every add/edit/deploy fail one at a time.
+    user_ids = list(books)
+    labels = [f"{uid}  ({len(G.list_groups(db, uid))})" for uid in user_ids]
+    for tab, user_id in zip(st.tabs(labels), user_ids):
+        with tab:
+            _account_tab(db, user_id, books[user_id], lot_map)
+
+
+def _account_tab(db, user_id, book, lot_map):
+    """Everything for one account: its positions, its groups, its pickers."""
+    if book['error']:
+        st.error(f"**{user_id}** — could not fetch positions: {book['error']}")
+
+    live = book['positions']
+    live_map = P.as_map(live)
+    open_positions = P.open_only(live)
+    st.caption(f"{len(open_positions)} open · {len(live) - len(open_positions)} closed")
+
     unresolved = sorted({p['tradingsymbol'] for p in open_positions
                          if not lot_map.get(p['tradingsymbol'])})
     if unresolved:
@@ -66,16 +81,16 @@ def render(db):
               "adding, editing and deploying them is blocked. Press **🔄 Refresh**."
         )
 
-    _open_positions_table(db, open_positions, lot_map)
-    _create_form(db)
+    _open_positions_table(db, user_id, open_positions, lot_map)
+    _create_form(db, user_id)
     st.divider()
 
-    if not all_groups:
-        st.info("No groups yet — create one above, then tag open positions into it.")
+    groups = G.list_groups(db, user_id)
+    if not groups:
+        st.info(f"No groups for **{user_id}** yet — create one above, then tag its "
+                "open positions into it.")
         return
-
-    st.subheader("Groups")
-    for group in all_groups:
+    for group in groups:
         _group_panel(db, group, live_map, open_positions, lot_map)
 
 
@@ -87,7 +102,7 @@ def _warn_imbalance(group):
 
 
 # ----- open positions ----------------------------------------------------
-def _open_positions_table(db, open_positions, lot_map):
+def _open_positions_table(db, user_id, open_positions, lot_map):
     """Read-only mirror of the Zerodha book.
 
     Every figure here is exactly what Kite reports — quantity, average, LTP and
@@ -96,7 +111,8 @@ def _open_positions_table(db, open_positions, lot_map):
     """
     if not open_positions:
         return
-    with st.expander(f"📋 Open positions ({len(open_positions)})", expanded=True):
+    with st.expander(f"📋 {user_id} — open positions ({len(open_positions)})",
+                     expanded=True):
         st.dataframe(
             [{
                 'Instrument': p['tradingsymbol'],
@@ -137,32 +153,40 @@ def _lots(quantity, lot_size):
 
 
 # ----- create ------------------------------------------------------------
-def _create_form(db):
-    with st.expander("➕ Create a group", expanded=False):
-        with st.form("ztrade_create_group", clear_on_submit=True):
+def _create_form(db, user_id):
+    with st.expander(f"➕ Create a group for {user_id}", expanded=False):
+        # Keys carry the account: every tab renders at once, so a shared key
+        # would make two accounts' forms the same widget.
+        with st.form(f"ztrade_create_group_{user_id}", clear_on_submit=True):
             c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-            name = c1.text_input("Group name", placeholder="e.g. Aug Iron Condor")
+            name = c1.text_input("Group name", placeholder="e.g. Aug Iron Condor",
+                                 key=f"ztrade_newname_{user_id}")
             stoploss = c2.number_input(
                 "Stoploss (₹)", value=None, step=500.0, format="%.2f",
+                key=f"ztrade_newsl_{user_id}",
                 help="Fires when group P&L falls to or below this. May be negative "
                      "(cut a loss) or positive (lock in a profit floor). Leave blank to disarm.",
             )
             target = c3.number_input(
                 "Target (₹)", value=None, step=500.0, format="%.2f",
+                key=f"ztrade_newtg_{user_id}",
                 help="Fires when group P&L rises to or above this. Leave blank to disarm.",
             )
             c4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            alert_enabled = c4.checkbox("Alerts enabled", value=True)
+            alert_enabled = c4.checkbox("Alerts enabled", value=True,
+                                        key=f"ztrade_newalert_{user_id}")
 
             if st.form_submit_button("Create group", type="primary"):
-                group, err = G.create_group(db, name, stoploss, target, alert_enabled)
+                group, err = G.create_group(db, name, user_id, stoploss, target,
+                                            alert_enabled)
                 if err:
                     H.flash('error', err)
                 else:
                     # Open the new group once so its picker is on screen; from
                     # then on the expander's own state is the user's to control.
                     st.session_state[_panel_key(group.id)] = True
-                    H.flash('success', f"Created '{group.name}' — pick its positions below.")
+                    H.flash('success', f"Created '{group.name}' under {user_id} — "
+                                       f"pick its positions below.")
                     _warn_imbalance(group)
                 st.rerun()
 
@@ -171,7 +195,7 @@ def _create_form(db):
 def _group_panel(db, group, live_map, open_positions, lot_map):
     mark = G.mark_group(db, group, live_map)
     badge = H.STATUS_BADGE.get(group.status, group.status)
-    header = (f"**{group.name}** — {mark['n_legs']} instrument(s) · "
+    header = (f"**{group.name}** · {group.user_id} — {mark['n_legs']} instrument(s) · "
               f"P&L {H.money(mark['pnl'])}")
 
     with st.expander(header, key=_panel_key(group.id), on_change="rerun"):
@@ -305,7 +329,7 @@ def _add_positions(db, group, open_positions, lot_map):
 
     # Still tracked, just not shown: cross-group over-allocation is reported as a
     # warning when adding rather than as a column here.
-    elsewhere = G.allocation_map(db, exclude_group_id=group.id)
+    elsewhere = G.allocation_map(db, exclude_group_id=group.id, user_id=group.user_id)
     rows = [{
         'key': f"{p['tradingsymbol']}|{p['product']}",
         'Add': False,

@@ -71,17 +71,40 @@ def ist(dt):
     return pytz.utc.localize(dt).astimezone(IST).strftime("%d %b %H:%M:%S")
 
 
-# max_entries caps the cache at the current + previous token, so daily enctoken
-# rotation can't accumulate dead entries on a memory-tight host.
+# Keyed on the full credential set so rotating any one token refetches all.
+# max_entries stays tiny: this holds a few dozen small dicts per account.
 @st.cache_data(ttl=20, max_entries=2, show_spinner=False)
-def _fetch_cached(enctoken, user_id):
-    """Positions + fetch time, memoised for 20s on the credentials."""
-    rows = positions.fetch(enctoken, user_id)
-    return rows, datetime.datetime.utcnow()
+def _fetch_all_cached(creds):
+    """Every account's book, fetched in parallel (max 5 at a time)."""
+    return positions.fetch_many(list(creds)), datetime.datetime.utcnow()
 
 
 def clear_positions_cache():
-    _fetch_cached.clear()
+    _fetch_all_cached.clear()
+
+
+def live_positions_by_account(db):
+    """``({user_id: {...}}, fetched_at)`` for every configured account.
+
+    Each entry is ``{'positions': [...], 'error': str|None}``. Accounts are
+    fetched concurrently and one bad token only marks its own entry, so a stale
+    login never blanks the other books. Snapshots are persisted per account so
+    the dashboard has something to draw before the poller's next cycle.
+    """
+    creds = positions.credentials(db)
+    if not creds:
+        return {}, None
+    try:
+        results, fetched_at = _fetch_all_cached(tuple(creds))
+    except Exception as exc:  # noqa: BLE001 - shown per page, not raised
+        return ({u: {'positions': [], 'error': str(exc)} for u, _ in creds}, None)
+
+    if st.session_state.get("_ztrade_last_fetch_all") != fetched_at:
+        for user_id, res in results.items():
+            if not res['error']:
+                positions.save_snapshot(db, user_id, res['positions'])
+        st.session_state["_ztrade_last_fetch_all"] = fetched_at
+    return results, fetched_at
 
 
 # Lot sizes only change when the exchange revises a contract, so an hours-long
@@ -98,32 +121,13 @@ def lot_sizes(db, symbols):
     whole-lots rule rather than blocking the user on a broker hiccup.
     """
     symbols = tuple(sorted({s for s in symbols if s}))
-    enctoken, user_id = positions.broker_credentials(db)
-    if not enctoken or not symbols:
+    # The instruments dump is the same for everyone, so any configured account's
+    # token can fetch it — no need for the master specifically.
+    creds = positions.credentials(db)
+    if not creds or not symbols:
         return {}
+    user_id, enctoken = creds[0]
     try:
         return _lot_sizes_cached(enctoken, user_id, symbols)
     except Exception:  # noqa: BLE001 - validation relaxes, page still works
         return {}
-
-
-def live_positions(db):
-    """``(positions, fetched_at, error)`` — live book, snapshotted to the DB.
-
-    Never raises: a broker/auth failure comes back as the third element so the
-    page can still render its groups off stored state.
-    """
-    enctoken, user_id = positions.broker_credentials(db)
-    if not enctoken:
-        return [], None, "No Zerodha enctoken configured — set one in **Broker Setup**."
-    try:
-        rows, fetched_at = _fetch_cached(enctoken, user_id)
-    except Exception as exc:  # noqa: BLE001 - surfaced to the user, not swallowed
-        return [], None, f"Could not fetch positions: {exc}"
-
-    # Persist only genuinely new fetches, so a cached read doesn't refresh the
-    # snapshot's updated_at and make stale data look current.
-    if st.session_state.get("_ztrade_last_fetch") != fetched_at:
-        positions.save_snapshot(db, rows)
-        st.session_state["_ztrade_last_fetch"] = fetched_at
-    return rows, fetched_at, None

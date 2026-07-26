@@ -8,17 +8,79 @@ Open vs closed is decided purely by ``quantity``: a squared-off leg stays in
 Kite's ``net`` list with ``quantity == 0`` and its P&L in ``realised``.
 """
 import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from common.database import BrokerConfig, PositionSnapshot
 from common.zerodha_client import ZerodhaClient, fetch_with_retry
 
 
+MAX_PARALLEL_ACCOUNTS = 5
+
+
 def broker_credentials(db):
-    """Return ``(enctoken, user_id)`` from broker_config, or ``(None, None)``."""
+    """Return ``(enctoken, user_id)`` for the master account, or ``(None, None)``."""
     cfg = db.query(BrokerConfig).filter(BrokerConfig.broker_name == 'ZERODHA').first()
     if not cfg or not cfg.enctoken:
         return None, None
     return cfg.enctoken, cfg.user_id
+
+
+def credentials(db):
+    """``[(user_id, enctoken), ...]`` for every configured account, master first.
+
+    Accounts without a token are skipped — there is nothing to fetch with.
+    """
+    from common.broker import list_accounts, normalise_user_id
+    return [
+        (normalise_user_id(row.user_id), row.enctoken)
+        for row in list_accounts(db)
+        if row.enctoken
+    ]
+
+
+def fetch_many(creds, max_workers=MAX_PARALLEL_ACCOUNTS, client_for=None):
+    """Fetch several accounts' books concurrently.
+
+    Returns ``{user_id: {'positions': [...], 'error': str|None}}``. One account
+    failing — an expired token, say — never sinks the others; its entry carries
+    the message instead.
+
+    Concurrency is capped at ``max_workers`` (5 by default): the pool runs that
+    many at a time and queues the rest, so twenty accounts still means five
+    sockets open at once rather than twenty.
+    """
+    creds = [(u, t) for u, t in creds if u and t]
+    if not creds:
+        return {}
+    if len(creds) == 1:                       # no pool for the common case
+        user_id, token = creds[0]
+        return {user_id: _fetch_one(user_id, token, client_for)}
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(creds)),
+                            thread_name_prefix="ztrade-fetch") as pool:
+        futures = {pool.submit(_fetch_one, u, t, client_for): u for u, t in creds}
+        for future in as_completed(futures):
+            user_id = futures[future]
+            try:
+                out[user_id] = future.result()
+            except Exception as exc:  # noqa: BLE001 - reported per account
+                out[user_id] = {'positions': [], 'error': str(exc)}
+    return out
+
+
+def _fetch_one(user_id, enctoken, client_for=None):
+    try:
+        if client_for is None:
+            return {'positions': fetch(enctoken, user_id), 'error': None}
+        # Caller-supplied client: one long-lived session per account, reused
+        # across poll cycles. Safe because each account's client is only ever
+        # touched by the one worker handling that account.
+        client = client_for(user_id, enctoken)
+        rows = fetch_with_retry(client.get_positions)
+        return {'positions': [normalize(r) for r in rows], 'error': None}
+    except Exception as exc:  # noqa: BLE001 - surfaced against this account
+        return {'positions': [], 'error': str(exc)}
 
 
 def normalize(row):
@@ -78,22 +140,24 @@ def as_map(positions):
     return {position_key(p['tradingsymbol'], p['product']): p for p in positions}
 
 
-def save_snapshot(db, positions):
-    """Upsert the polled book into ``ztrade_position_snapshots``.
+def save_snapshot(db, user_id, positions):
+    """Upsert one account's polled book into ``ztrade_position_snapshots``.
 
-    Rows the broker no longer reports at all are left untouched — a leg that
-    vanishes is handled by the group marking code, which freezes its P&L rather
-    than silently valuing it at zero.
+    Scoped to ``user_id``: saving one account never touches another's rows.
+    Rows the broker no longer reports are left untouched — a leg that vanishes
+    is handled by the group marking code, which freezes its P&L rather than
+    silently valuing it at zero.
     """
     now = datetime.datetime.utcnow()
     existing = {
         position_key(r.tradingsymbol, r.product): r
-        for r in db.query(PositionSnapshot).all()
+        for r in db.query(PositionSnapshot).filter(PositionSnapshot.user_id == user_id)
     }
     for p in positions:
         row = existing.get(position_key(p['tradingsymbol'], p['product']))
         if row is None:
-            row = PositionSnapshot(tradingsymbol=p['tradingsymbol'], product=p['product'])
+            row = PositionSnapshot(user_id=user_id, tradingsymbol=p['tradingsymbol'],
+                                   product=p['product'])
             db.add(row)
         row.exchange = p['exchange']
         row.instrument_token = p['instrument_token']
@@ -108,11 +172,19 @@ def save_snapshot(db, positions):
     return len(positions)
 
 
-def load_snapshot(db):
-    """Read the last persisted book back as normalized dicts."""
-    rows = db.query(PositionSnapshot).order_by(PositionSnapshot.tradingsymbol).all()
+def load_snapshot(db, user_id=None):
+    """Read persisted positions back as normalized dicts.
+
+    ``user_id`` narrows to one account; omit it for every account (each dict
+    carries its own ``user_id``).
+    """
+    query = db.query(PositionSnapshot)
+    if user_id is not None:
+        query = query.filter(PositionSnapshot.user_id == user_id)
+    rows = query.order_by(PositionSnapshot.tradingsymbol).all()
     return [
         {
+            'user_id': r.user_id,
             'tradingsymbol': r.tradingsymbol,
             'exchange': r.exchange,
             'product': r.product,
@@ -129,11 +201,19 @@ def load_snapshot(db):
     ]
 
 
-def snapshot_age(db):
+def snapshot_age(db, user_id=None):
     """Newest snapshot timestamp (UTC), or ``None`` if nothing polled yet."""
-    row = (
-        db.query(PositionSnapshot)
-        .order_by(PositionSnapshot.updated_at.desc())
-        .first()
-    )
+    query = db.query(PositionSnapshot)
+    if user_id is not None:
+        query = query.filter(PositionSnapshot.user_id == user_id)
+    row = query.order_by(PositionSnapshot.updated_at.desc()).first()
     return row.updated_at if row else None
+
+
+def snapshot_maps(db):
+    """``{user_id: {(symbol, product): position}}`` across every account."""
+    out = {}
+    for row in load_snapshot(db):
+        out.setdefault(row['user_id'], {})[
+            position_key(row['tradingsymbol'], row['product'])] = row
+    return out

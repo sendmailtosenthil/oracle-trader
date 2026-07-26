@@ -37,8 +37,12 @@ def get_settings(db):
 
 
 # ----- group CRUD --------------------------------------------------------
-def list_groups(db):
-    return db.query(TradeGroup).order_by(TradeGroup.created_at.asc()).all()
+def list_groups(db, user_id=None):
+    """Groups, optionally narrowed to one account."""
+    query = db.query(TradeGroup)
+    if user_id is not None:
+        query = query.filter(TradeGroup.user_id == user_id)
+    return query.order_by(TradeGroup.created_at.asc()).all()
 
 
 def get_group(db, group_id):
@@ -54,18 +58,24 @@ def legs_of(db, group_id):
     )
 
 
-def create_group(db, name, stoploss=None, target=None, alert_enabled=True):
-    """Create a draft group. Returns ``(group, error)``."""
+def create_group(db, name, user_id, stoploss=None, target=None, alert_enabled=True):
+    """Create a draft group owned by ``user_id``. Returns ``(group, error)``."""
     name = (name or '').strip()
     if not name:
         return None, "Group name is required."
-    if db.query(TradeGroup).filter(TradeGroup.name == name).first():
-        return None, f"A group named '{name}' already exists."
+    if not user_id:
+        return None, "A group must belong to a Zerodha account."
+    clash = db.query(TradeGroup).filter(TradeGroup.name == name).first()
+    if clash:
+        # Names are unique across accounts, so say which one already has it
+        # rather than leave the user guessing at an invisible collision.
+        return None, (f"A group named '{name}' already exists"
+                      + (f" under {clash.user_id}." if clash.user_id != user_id else "."))
     err = validate_levels(stoploss, target)
     if err:
         return None, err
     group = TradeGroup(
-        name=name, stoploss=stoploss, target=target,
+        name=name, user_id=user_id, stoploss=stoploss, target=target,
         alert_enabled=bool(alert_enabled), status=DRAFT,
     )
     db.add(group)
@@ -133,7 +143,9 @@ def update_group(db, group, name=None, stoploss=..., target=..., alert_enabled=N
             .first()
         )
         if clash:
-            return group, f"A group named '{name}' already exists."
+            return group, (f"A group named '{name}' already exists"
+                           + (f" under {clash.user_id}."
+                              if clash.user_id != group.user_id else "."))
         group.name = name
     group.stoploss = new_sl
     group.target = new_tg
@@ -261,15 +273,19 @@ def remove_leg(db, leg):
     db.commit()
 
 
-def allocation_map(db, exclude_group_id=None):
-    """Total quantity already tagged per position, across all groups.
+def allocation_map(db, exclude_group_id=None, user_id=None):
+    """Total quantity already tagged per position, across an account's groups.
 
     Used to warn when the same broker position is spread over several groups by
-    more than it actually holds.
+    more than it actually holds. Scoped by account: two logins holding the same
+    contract are unrelated books and must not pool their allocations.
     """
     q = db.query(TradeGroupLeg)
     if exclude_group_id is not None:
         q = q.filter(TradeGroupLeg.group_id != exclude_group_id)
+    if user_id is not None:
+        q = q.join(TradeGroup, TradeGroup.id == TradeGroupLeg.group_id).filter(
+            TradeGroup.user_id == user_id)
     out = {}
     for leg in q.all():
         key = (leg.tradingsymbol, leg.product)
@@ -323,8 +339,17 @@ def mark_group(db, group, live_map):
     }
 
 
-def mark_all(db, live_map):
-    return [mark_group(db, g, live_map) for g in list_groups(db)]
+def mark_all(db, maps_by_user, groups=None):
+    """Mark each group against its own account's book.
+
+    ``maps_by_user`` is ``{user_id: {(symbol, product): position}}``; a group
+    whose account has no snapshot marks against an empty book, which freezes its
+    legs rather than valuing them at zero.
+    """
+    return [
+        mark_group(db, g, maps_by_user.get(g.user_id, {}))
+        for g in (groups if groups is not None else list_groups(db))
+    ]
 
 
 # ----- triggers ----------------------------------------------------------
@@ -381,6 +406,11 @@ def monitored(db):
         .filter(TradeGroup.status.in_([DEPLOYED, TRIGGERED]))
         .all()
     )
+
+
+def accounts_with_groups(db):
+    """User ids that actually own a monitored group — the poller's fetch list."""
+    return sorted({g.user_id for g in monitored(db) if g.user_id})
 
 
 # ----- lifecycle ---------------------------------------------------------

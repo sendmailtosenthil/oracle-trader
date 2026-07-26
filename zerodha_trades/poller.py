@@ -70,42 +70,66 @@ class Poller:
     """Owns the poll loop and the reused Kite client."""
 
     def __init__(self):
-        self._client = None
-        self._client_token = None
+        self._clients = {}          # user_id -> (enctoken, ZerodhaClient)
         self._stop = threading.Event()
 
     # ----- client reuse -------------------------------------------------
-    def _client_for(self, enctoken, user_id):
-        """One client (and TCP session) for the life of an enctoken."""
-        if self._client is None or self._client_token != enctoken:
-            self._client = ZerodhaClient(enctoken, user_id=user_id, pace_seconds=0)
-            self._client_token = enctoken
-        return self._client
+    def _client_for(self, user_id, enctoken):
+        """One client (and TCP session) per account, for the life of its token.
+
+        Rebuilt when that account's enctoken rotates. Each entry is only ever
+        used by the single worker handling that account, so no locking needed.
+        """
+        cached = self._clients.get(user_id)
+        if cached is None or cached[0] != enctoken:
+            cached = (enctoken, ZerodhaClient(enctoken, user_id=user_id, pace_seconds=0))
+            self._clients[user_id] = cached
+        return cached[1]
 
     # ----- one cycle ----------------------------------------------------
     def poll_once(self, db):
-        """Fetch, snapshot, mark and alert. Returns a short status string."""
+        """Fetch every relevant account, snapshot, mark and alert.
+
+        Only accounts that actually own a monitored group are fetched, and they
+        are fetched concurrently (capped at ``P.MAX_PARALLEL_ACCOUNTS``).
+        Returns a short status string.
+        """
         settings = G.get_settings(db)
         watched = G.monitored(db)
         if not watched:
             return "idle: no deployed groups"
 
-        enctoken, user_id = P.broker_credentials(db)
-        if not enctoken:
-            return "error: no enctoken configured"
+        wanted = {g.user_id for g in watched}
+        creds = [(u, t) for u, t in P.credentials(db) if u in wanted]
+        if not creds:
+            return "error: no enctoken for " + ", ".join(sorted(wanted))
 
-        client = self._client_for(enctoken, user_id)
-        book = [P.normalize(r) for r in client.get_positions()]
-        P.save_snapshot(db, book)
+        results = P.fetch_many(creds, client_for=self._client_for)
 
-        live_map = P.as_map(book)
-        marks = [G.mark_group(db, g, live_map) for g in watched]
+        maps, failures, n_positions = {}, [], 0
+        for user_id, res in results.items():
+            if res['error']:
+                failures.append(f"{user_id}: {res['error']}")
+                self._clients.pop(user_id, None)   # rebuild on the next attempt
+                continue
+            P.save_snapshot(db, user_id, res['positions'])
+            maps[user_id] = P.as_map(res['positions'])
+            n_positions += len(res['positions'])
+
+        # Mark only groups whose account returned fresh data. Valuing a group
+        # against a book we failed to fetch would read its legs as frozen and
+        # could trip a level on numbers the broker never gave us.
+        markable = [g for g in watched if g.user_id in maps]
+        marks = G.mark_all(db, maps, groups=markable)
         fired = G.apply_marks(db, marks, on_trigger=self._notify(settings))
 
         settings.last_poll_at = datetime.datetime.utcnow()
-        status = f"ok: {len(book)} positions, {len(marks)} groups"
+        status = (f"ok: {len(maps)}/{len(creds)} account(s), "
+                  f"{n_positions} positions, {len(marks)} groups")
         if fired:
             status += f", {len(fired)} triggered"
+        if failures:
+            status += " | failed — " + "; ".join(failures)
         settings.last_poll_status = status
         db.commit()
         return status
@@ -149,7 +173,7 @@ class Poller:
                              if status.startswith("ok") else IDLE_SLEEP)
             except FatalAuthError as exc:
                 log.error("enctoken rejected (%s) — waiting for a refresh", exc)
-                self._client = self._client_token = None
+                self._clients.clear()
                 delay = IDLE_SLEEP
             except Exception:  # noqa: BLE001 - the loop must outlive any one cycle
                 log.exception("poll cycle failed")

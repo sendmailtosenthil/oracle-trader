@@ -41,7 +41,7 @@ def _maybe_dialog(db):
     if group is None:                      # deleted from another tab
         st.session_state.pop(OPEN_DIALOG, None)
         return
-    live_map = P.as_map(P.load_snapshot(db))
+    live_map = P.snapshot_maps(db).get(group.user_id, {})
     _positions_dialog(G.mark_group(db, group, live_map))
 
 
@@ -92,11 +92,13 @@ def _cards(db):
         st.info("No groups yet — create one under **Group Management**.")
         return
 
-    live_map = P.as_map(P.load_snapshot(db))
-    marks = [G.mark_group(db, g, live_map) for g in all_groups]
+    # Every account's cards on one page; each group marks against its own book.
+    marks = G.mark_all(db, P.snapshot_maps(db), groups=all_groups)
 
     total = sum(m['pnl'] for m in marks)
-    st.markdown(f"**{len(marks)} group(s)** · combined P&L {H.colored_money(total)}")
+    accounts = {m['group'].user_id for m in marks}
+    st.markdown(f"**{len(marks)} group(s)** across **{len(accounts)} account(s)** · "
+                f"combined P&L {H.colored_money(total)}")
 
     for start in range(0, len(marks), CARDS_PER_ROW):
         row = marks[start:start + CARDS_PER_ROW]
@@ -109,7 +111,8 @@ def _cards(db):
 def _card(mark):
     group, pnl = mark['group'], mark['pnl']
     with st.container(border=True):
-        st.markdown(f"**{group.name}**  {H.STATUS_BADGE.get(group.status, group.status)}")
+        st.markdown(f"**{group.name}**  `{group.user_id}`  "
+                    f"{H.STATUS_BADGE.get(group.status, group.status)}")
         st.markdown(f"### {H.colored_money(pnl)}")
         st.caption(f"{mark['n_legs']} instrument(s) · {mark['open_legs']} open")
 
@@ -154,7 +157,8 @@ def _forget_dialog():
 def _positions_dialog(mark):
     """Per-instrument breakdown behind a card's P&L."""
     group, pnl = mark['group'], mark['pnl']
-    st.markdown(f"**{group.name}**  {H.STATUS_BADGE.get(group.status, group.status)}"
+    st.markdown(f"**{group.name}**  `{group.user_id}`  "
+                f"{H.STATUS_BADGE.get(group.status, group.status)}"
                 f" &nbsp;·&nbsp; SL {H.money(group.stoploss)}"
                 f" &nbsp;·&nbsp; Target {H.money(group.target)}")
 

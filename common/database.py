@@ -200,6 +200,9 @@ class TradeGroup(Base):
     __tablename__ = 'ztrade_groups'
     id = Column(Integer, primary_key=True)
     name = Column(String, unique=True, nullable=False)
+    # Which Zerodha account the legs belong to. Groups never span accounts —
+    # positions from two logins are different books entirely.
+    user_id = Column(String, nullable=False, default='PC8006')
     # Rupee P&L triggers. Either may be positive or negative: `target` is the
     # upper trigger (fires when P&L rises to it), `stoploss` the lower one — so
     # a positive stoploss acts as a profit floor. None = that side is unarmed.
@@ -239,12 +242,15 @@ class TradeGroupLeg(Base):
 
 
 class PositionSnapshot(Base):
-    # Latest polled Kite position, one row per (tradingsymbol, product). Written
-    # by the poller so the UI can render without its own broker round-trip.
+    # Latest polled Kite position, one row per (account, tradingsymbol, product).
+    # Written by the poller so the UI can render without its own broker
+    # round-trip. The account is part of the key: two logins can hold the same
+    # contract with entirely different quantities and averages.
     __tablename__ = 'ztrade_position_snapshots'
-    __table_args__ = (UniqueConstraint('tradingsymbol', 'product',
-                                       name='uq_ztrade_snapshot_symbol_product'),)
+    __table_args__ = (UniqueConstraint('user_id', 'tradingsymbol', 'product',
+                                       name='uq_ztrade_snapshot_user_symbol_product'),)
     id = Column(Integer, primary_key=True)
+    user_id = Column(String, nullable=False, default='PC8006')
     tradingsymbol = Column(String, nullable=False)
     exchange = Column(String, default='NFO')
     product = Column(String, default='NRML')
@@ -280,10 +286,30 @@ SessionLocal = None
 def init_db(db_path='sqlite:///oracle.db'):
     global engine, SessionLocal
     engine = create_engine(db_path, connect_args={"check_same_thread": False})
+    _drop_stale_caches()
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     seed_data()
+
+def _drop_stale_caches():
+    """Drop cache tables whose *key* changed, so create_all rebuilds them.
+
+    ``_ensure_columns`` can add a column but not rewrite a UNIQUE constraint,
+    and SQLite cannot alter one in place. ``ztrade_position_snapshots`` gained
+    ``user_id`` in its key when the module went multi-account; it holds nothing
+    but the last poll, so dropping it costs one poll cycle and avoids a rebuild
+    dance. Only ever do this to tables that are pure cache.
+    """
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    if 'ztrade_position_snapshots' not in inspector.get_table_names():
+        return
+    columns = {c['name'] for c in inspector.get_columns('ztrade_position_snapshots')}
+    if 'user_id' not in columns:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE ztrade_position_snapshots"))
+
 
 def _ensure_columns():
     """Add columns introduced after a table was first created (SQLite create_all
@@ -299,6 +325,8 @@ def _ensure_columns():
                             ('trail_gap', 'INTEGER DEFAULT 25')],
         'momentum_holdings': [('best_rank', 'INTEGER')],
         'ztrade_settings': [('test_mode', 'BOOLEAN DEFAULT 0')],
+        # Pre-multi-account groups all belonged to the master login.
+        'ztrade_groups': [("user_id", "VARCHAR DEFAULT 'PC8006'")],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():
