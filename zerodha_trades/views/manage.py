@@ -52,6 +52,20 @@ def render(db):
                           + [leg.tradingsymbol for g in all_groups
                              for leg in G.legs_of(db, g.id)])
 
+    # Quantities can't be validated without lot sizes, and an unverified
+    # quantity is refused rather than waved through — so say so up front instead
+    # of letting every add/edit/deploy fail one at a time.
+    unresolved = sorted({p['tradingsymbol'] for p in open_positions
+                         if not lot_map.get(p['tradingsymbol'])})
+    if unresolved:
+        st.warning(
+            "⚠️ Couldn't look up the lot size for "
+            + ", ".join(f"**{s}**" for s in unresolved[:5])
+            + (f" and {len(unresolved) - 5} more" if len(unresolved) > 5 else "")
+            + ". Quantities for these can't be checked against their lot size, so "
+              "adding, editing and deploying them is blocked. Press **🔄 Refresh**."
+        )
+
     _open_positions_table(db, open_positions, lot_map)
     _create_form(db)
     st.divider()
@@ -172,7 +186,7 @@ def _group_panel(db, group, live_map, open_positions, lot_map):
         _levels_form(db, group)
         _legs_editor(db, group, mark, live_map, lot_map)
         _add_positions(db, group, open_positions, lot_map)
-        _lifecycle_bar(db, group)
+        _lifecycle_bar(db, group, lot_map)
 
 
 def _levels_form(db, group):
@@ -359,13 +373,13 @@ def _add_positions(db, group, open_positions, lot_map):
         st.rerun()
 
 
-def _lifecycle_bar(db, group):
+def _lifecycle_bar(db, group, lot_map):
     st.divider()
     c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
     if group.status == G.DRAFT:
         if c1.button("🚀 Deploy", key=f"ztrade_dep_{group.id}", type="primary",
                      width='stretch'):
-            ok, err = G.deploy(db, group)
+            ok, err = G.deploy(db, group, lot_map)
             if ok:
                 H.flash('success', f"'{group.name}' deployed — now monitored.")
                 _warn_imbalance(group)

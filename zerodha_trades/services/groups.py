@@ -196,8 +196,10 @@ def add_leg(db, group, position, quantity=None, lot_size=None):
 def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
     """Leg quantity must be non-zero, same-signed, and within the position.
 
-    For derivatives it must also be a whole number of lots. ``lot_size`` of 1
-    (cash equity) or ``None`` (couldn't be resolved) skips that check.
+    It must also be a whole number of lots. An unresolved ``lot_size`` is a
+    *failure*, not a free pass: without it the whole-lot rule cannot be checked,
+    and letting the quantity through unchecked is exactly how a bad one reaches
+    a deployed group.
     """
     if qty == 0:
         return f"{symbol}: quantity cannot be 0."
@@ -208,6 +210,8 @@ def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
     if abs(qty) > abs(pos_qty):
         return (f"{symbol}: group quantity {qty} exceeds the position quantity "
                 f"{pos_qty}.")
+    if not lot_size:
+        return lot_size_unavailable(symbol)
     # A one-lot position has exactly one legal quantity, so say that outright
     # rather than let the caller guess from a lot-multiple complaint.
     if lot_size and lot_size > 1 and abs(pos_qty) == lot_size and abs(qty) != lot_size:
@@ -216,9 +220,20 @@ def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
     return validate_lot_multiple(qty, symbol, lot_size)
 
 
+def lot_size_unavailable(symbol):
+    return (f"{symbol}: couldn't look up the lot size, so the quantity can't be "
+            f"checked against it. Press Refresh and try again.")
+
+
 def validate_lot_multiple(qty, symbol, lot_size):
-    """Reject a derivative quantity that isn't a whole number of lots."""
-    if not lot_size or lot_size <= 1 or abs(qty) % lot_size == 0:
+    """Reject a quantity that isn't a whole number of lots.
+
+    A lot size of 1 (cash equity) makes every quantity a whole lot. A missing
+    lot size means we could not verify, which is treated as a failure.
+    """
+    if not lot_size:
+        return lot_size_unavailable(symbol)
+    if lot_size <= 1 or abs(qty) % lot_size == 0:
         return None
     sign = -1 if qty < 0 else 1
     lots_below = abs(qty) // lot_size
@@ -369,8 +384,13 @@ def monitored(db):
 
 
 # ----- lifecycle ---------------------------------------------------------
-def deploy(db, group):
-    """Arm a group for monitoring. Returns ``(ok, error)``."""
+def deploy(db, group, lot_sizes=None):
+    """Arm a group for monitoring. Returns ``(ok, error)``.
+
+    Re-checks every leg's quantity rather than trusting what was stored: a leg
+    saved before the whole-lot rule existed, or while the lot size could not be
+    resolved, must not slip into a monitored group.
+    """
     legs = legs_of(db, group.id)
     if not legs:
         return False, f"'{group.name}' has no positions — add at least one before deploying."
@@ -379,6 +399,17 @@ def deploy(db, group):
     err = validate_levels(group.stoploss, group.target)
     if err:
         return False, err
+
+    problems = [
+        p for p in (
+            validate_lot_multiple(leg.quantity, leg.tradingsymbol,
+                                  (lot_sizes or {}).get(leg.tradingsymbol))
+            for leg in legs
+        ) if p
+    ]
+    if problems:
+        return False, (f"Can't deploy '{group.name}' — "
+                       + " ".join(problems))
     group.status = DEPLOYED
     group.deployed_at = datetime.datetime.utcnow()
     group.trigger_type = None
