@@ -295,15 +295,61 @@ def allocation_map(db, exclude_group_id=None, user_id=None):
 
 # ----- marking -----------------------------------------------------------
 def leg_pnl(leg, live):
-    """``(pnl, state)`` for one leg. State is ``open`` / ``closed`` / ``missing``."""
+    """``(pnl, state)`` for one leg. State is ``open`` / ``closed`` / ``missing``.
+
+    An open leg is always marked live. Once it is no longer open its P&L is
+    settled, and ``frozen_pnl`` — captured automatically when it closes, and
+    editable afterwards — wins over the derived figure. That override matters
+    because splitting a squared-off position's realised P&L across groups is
+    only a pro-rata guess; the user knows what actually filled.
+    """
     if live is None:
         return (leg.frozen_pnl or 0.0), 'missing'
     if live['quantity'] == 0:
-        # Squared off — take this group's share of the position's realised P&L.
-        basis = abs(leg.source_quantity or 0)
-        share = (abs(leg.quantity) / basis) if basis else 0.0
-        return live['realised'] * share, 'closed'
+        if leg.frozen_pnl is not None:
+            return leg.frozen_pnl, 'closed'
+        return auto_closed_pnl(leg, live), 'closed'
     return leg.quantity * (live['last_price'] - live['average_price']), 'open'
+
+
+def auto_closed_pnl(leg, live):
+    """This group's pro-rata share of a squared-off position's realised P&L."""
+    basis = abs(leg.source_quantity or 0)
+    share = (abs(leg.quantity) / basis) if basis else 0.0
+    return (live.get('realised') or 0.0) * share
+
+
+def set_closed_pnl(db, leg, value, state):
+    """Override (or clear) a closed leg's P&L. Returns an error string or None.
+
+    Only meaningful once the leg has stopped moving: an open leg is marked
+    from the live price, so a hand-set value would be overwritten next tick.
+    """
+    if state == 'open':
+        return (f"{leg.tradingsymbol} is still open — its P&L is marked live and "
+                f"cannot be set by hand. Close the position first.")
+    leg.frozen_pnl = None if value is None else float(value)
+    db.commit()
+    return None
+
+
+def capture_closed_pnl(db, marks):
+    """Freeze the P&L of legs that have just stopped being open.
+
+    Called by the poller. Kite keeps revising ``realised`` after a square-off,
+    so pinning the value at the moment the leg closed stops a settled group
+    drifting — and gives the user a concrete number to correct.
+    """
+    frozen = 0
+    for mark in marks:
+        for item in mark['legs']:
+            leg = item['leg']
+            if item['state'] != 'open' and leg.frozen_pnl is None:
+                leg.frozen_pnl = item['pnl']
+                frozen += 1
+    if frozen:
+        db.commit()
+    return frozen
 
 
 def mark_group(db, group, live_map):
@@ -326,6 +372,7 @@ def mark_group(db, group, live_map):
             'live': live,
             'pnl': pnl,
             'state': state,
+            'overridden': state != 'open' and leg.frozen_pnl is not None,
             'last_price': live['last_price'] if live else None,
             'average_price': live['average_price'] if live else leg.avg_price,
             'position_quantity': live['quantity'] if live else None,

@@ -140,6 +140,19 @@ def _open_positions_table(db, user_id, open_positions, lot_map):
         )
 
 
+def _differs(typed, shown):
+    """True when a Closed P&L cell was actually edited.
+
+    Both sides may be None (open leg, or an untouched blank), and floats
+    round-trip through the grid, so compare to the paisa rather than exactly.
+    """
+    if typed is None and shown is None:
+        return False
+    if typed is None or shown is None:
+        return True
+    return abs(float(typed) - float(shown)) > 0.005
+
+
 def _lots(quantity, lot_size):
     """Quantity restated in lots, or ``None`` when the lot size is unknown.
 
@@ -240,7 +253,9 @@ def _legs_editor(db, group, mark, live_map, lot_map):
                 "tick `Remove` to drop a leg, then press **Apply changes**.")
     st.caption("Quantities move in whole lots and can't exceed the position, so a "
                "single-lot leg has only one valid value — remove it rather than "
-               "shrink it.")
+               "shrink it. Once a leg is closed its settled P&L can be corrected "
+               "in **Closed P&L**; clear that cell to fall back to the automatic "
+               "figure.")
     if not mark['legs']:
         st.caption("None yet — add open positions below.")
         return
@@ -248,14 +263,19 @@ def _legs_editor(db, group, mark, live_map, lot_map):
     rows = []
     for item in mark['legs']:
         leg = item['leg']
+        closed = item['state'] != 'open'
         rows.append({
             'id': leg.id,
+            'state': item['state'],
             'Instrument': leg.tradingsymbol,
             'Group Qty': leg.quantity,
             'Avg': item['average_price'],
             'LTP': item['last_price'],
             'P&L': item['pnl'],
-            'State': item['state'],
+            # Editable only once the leg is settled; blank while it is open
+            # so there is nothing to type into on a live position.
+            'Closed P&L': item['pnl'] if closed else None,
+            'State': item['state'] + (' (edited)' if item['overridden'] else ''),
             'Remove': False,
         })
     # data_editor round-trips a list of dicts as a list of dicts — no DataFrame
@@ -267,7 +287,7 @@ def _legs_editor(db, group, mark, live_map, lot_map):
         hide_index=True,
         width='stretch',
         column_order=['Remove', 'Instrument', 'Group Qty', 'Avg', 'LTP',
-                      'P&L', 'State'],
+                      'P&L', 'Closed P&L', 'State'],
         column_config={
             'Remove': st.column_config.CheckboxColumn("Remove", width="small"),
             'Group Qty': st.column_config.NumberColumn(
@@ -283,6 +303,9 @@ def _legs_editor(db, group, mark, live_map, lot_map):
             'P&L': st.column_config.NumberColumn(
                 "P&L", format="%.2f", disabled=True,
                 help="This group's share: Group Qty × (LTP − Avg)."),
+            'Closed P&L': st.column_config.NumberColumn(
+                "Closed P&L", format="%.2f", step=0.01,
+                help="Settled P&L for a closed leg. Prefilled with this group's pro-rata share of the realised amount — correct it if the actual fill differed. Clear the cell to go back to the automatic figure. Blank while the leg is still open."),
             'State': st.column_config.TextColumn("State", disabled=True),
             'Instrument': st.column_config.TextColumn("Instrument", disabled=True),
         },
@@ -290,7 +313,8 @@ def _legs_editor(db, group, mark, live_map, lot_map):
 
     if st.button("Apply changes", key=f"ztrade_apply_{group.id}"):
         by_id = {leg.id: leg for leg in G.legs_of(db, group.id)}
-        errors, removed, changed = [], 0, 0
+        before = {r['id']: r['Closed P&L'] for r in rows}
+        errors, removed, changed, repriced = [], 0, 0, 0
         for row in edited:
             leg = by_id.get(int(row['id']))
             if leg is None:
@@ -307,13 +331,23 @@ def _legs_editor(db, group, mark, live_map, lot_map):
                     errors.append(err)
                 else:
                     changed += 1
+            # Closed-leg P&L override. Compare against what was rendered so
+            # an untouched cell is never mistaken for an edit.
+            shown = before.get(leg.id)
+            typed = row.get('Closed P&L')
+            if _differs(typed, shown):
+                err = G.set_closed_pnl(db, leg, typed, row['state'])
+                if err:
+                    errors.append(err)
+                else:
+                    repriced += 1
         for err in errors:
             H.flash('error', err)
-        if changed or removed:
+        if changed or removed or repriced:
             H.flash('success', f"'{group.name}': {changed} quantity change(s), "
-                               f"{removed} removed.")
+                               f"{repriced} closed P&L edit(s), {removed} removed.")
         elif not errors:
-            H.flash('info', "Nothing to apply — no quantities changed.")
+            H.flash('info', "Nothing to apply — nothing changed.")
         st.rerun()
 
 
