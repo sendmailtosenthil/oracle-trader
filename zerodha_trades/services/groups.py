@@ -447,12 +447,19 @@ def mark_all(db, maps_by_user, groups=None):
 
 # ----- triggers ----------------------------------------------------------
 def evaluate(group, pnl):
-    """``(trigger_type, message)`` if the group breached a level, else ``(None, None)``."""
-    if group.target is not None and pnl >= group.target:
-        return TARGET, (f"🎯 Target reached — P&L ₹{pnl:,.2f} is at or above the "
+    """``(trigger_type, message)`` if the group breached a level, else ``(None, None)``.
+
+    Both levels must be *crossed*, not merely touched — strictly greater than
+    the target, strictly less than the stoploss. Resting exactly on a level is
+    not a breach, so a 20,000 target stays quiet at 20,000 and fires at 20,001;
+    a -6,100 stoploss stays quiet at -6,100 and fires at -6,101; and a +1,000
+    stoploss (a profit floor) stays quiet at 1,000 and fires at 999.
+    """
+    if group.target is not None and pnl > group.target:
+        return TARGET, (f"🎯 Target reached — P&L ₹{pnl:,.2f} has risen above the "
                         f"₹{group.target:,.2f} target.")
-    if group.stoploss is not None and pnl <= group.stoploss:
-        return STOPLOSS, (f"🛑 Stoploss hit — P&L ₹{pnl:,.2f} is at or below the "
+    if group.stoploss is not None and pnl < group.stoploss:
+        return STOPLOSS, (f"🛑 Stoploss hit — P&L ₹{pnl:,.2f} has fallen below the "
                           f"₹{group.stoploss:,.2f} stoploss.")
     return None, None
 

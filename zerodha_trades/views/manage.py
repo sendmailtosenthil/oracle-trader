@@ -205,8 +205,9 @@ def _create_form(db, user_id):
     with st.expander(f"➕ Create a group for {user_id}", expanded=False):
         # Keys carry the account: every tab renders at once, so a shared key
         # would make two accounts' forms the same widget.
-        st.caption("Stoploss fires when group P&L falls to or below it, target "
-                   "when it rises to or above. Either may be negative or "
+        st.caption("Both levels must be crossed, not just touched: the stoploss "
+                   "fires once P&L falls *below* it, the target once P&L rises "
+                   "*above* it. Either may be negative or "
                    "positive — a positive stoploss is a profit floor. Leave one "
                    "blank to disarm that side.")
         with st.form(f"ztrade_create_group_{user_id}", clear_on_submit=True):
