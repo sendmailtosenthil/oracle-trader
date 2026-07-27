@@ -208,7 +208,11 @@ class TradeGroup(Base):
     # a positive stoploss acts as a profit floor. None = that side is unarmed.
     stoploss = Column(Float, nullable=True)
     target = Column(Float, nullable=True)
+    # alert_enabled is the master switch, kept in sync with the channels below:
+    # deselecting every channel is how you silence a group.
     alert_enabled = Column(Boolean, default=True)
+    notify_email = Column(Boolean, default=True)
+    notify_telegram = Column(Boolean, default=True)
     status = Column(String, default='draft')        # 'draft' | 'deployed' | 'triggered'
     trigger_type = Column(String, nullable=True)    # 'TARGET' | 'STOPLOSS'
     trigger_message = Column(String, nullable=True)
@@ -326,7 +330,9 @@ def _ensure_columns():
         'momentum_holdings': [('best_rank', 'INTEGER')],
         'ztrade_settings': [('test_mode', 'BOOLEAN DEFAULT 0')],
         # Pre-multi-account groups all belonged to the master login.
-        'ztrade_groups': [("user_id", "VARCHAR DEFAULT 'PC8006'")],
+        'ztrade_groups': [("user_id", "VARCHAR DEFAULT 'PC8006'"),
+                          ('notify_email', 'BOOLEAN DEFAULT 1'),
+                          ('notify_telegram', 'BOOLEAN DEFAULT 1')],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

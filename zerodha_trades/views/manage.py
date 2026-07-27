@@ -16,6 +16,23 @@ from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
 
 
+# Display labels, positionally matched to G.ALL_CHANNELS.
+CHANNEL_LABELS = ["Email", "Telegram"]
+
+
+def _channels(labels):
+    """Map the multiselect's labels back to channel keys."""
+    return [G.ALL_CHANNELS[CHANNEL_LABELS.index(l)] for l in labels]
+
+
+def _channel_badge(group):
+    picked = G.channels_of(group)
+    if not picked:
+        return "🔕 alerts off"
+    names = ", ".join(CHANNEL_LABELS[G.ALL_CHANNELS.index(c)] for c in picked)
+    return f"🔔 {names}"
+
+
 def _panel_key(group_id):
     """Session-state key holding a group panel's open/closed state.
 
@@ -53,9 +70,15 @@ def render(db):
         p['tradingsymbol'] for res in books.values() for p in res['positions']
     ] + [leg.tradingsymbol for g in all_groups for leg in G.legs_of(db, g.id)])
 
-    user_ids = list(books)
-    labels = [f"{uid}  ({len(G.list_groups(db, uid))})" for uid in user_ids]
-    for tab, user_id in zip(st.tabs(labels), user_ids):
+    # Fixed order and fixed labels. `books` is filled in completion order by
+    # the parallel fetch, so ordering by it made the tabs shuffle between
+    # runs; and a label carrying a group count changes the moment a group is
+    # created, which Streamlit treats as a different tab set and resets the
+    # selection. The key keeps the chosen tab across reruns.
+    user_ids = [uid for uid, _ in P.credentials(db) if uid in books]
+    user_ids += [uid for uid in books if uid not in user_ids]
+    tabs = st.tabs(user_ids, key="ztrade_account_tabs", on_change="rerun")
+    for tab, user_id in zip(tabs, user_ids):
         with tab:
             _account_tab(db, user_id, books[user_id], lot_map)
 
@@ -69,8 +92,10 @@ def _account_tab(db, user_id, book, lot_map):
     live_map = P.as_map(live)
     open_positions = P.open_only(live)
     st.caption(f"{len(open_positions)} open · {len(live) - len(open_positions)} closed")
+    # Closed positions are shown and taggable: a group formed around legs
+    # that have since been squared off still needs to carry their P&L.
 
-    unresolved = sorted({p['tradingsymbol'] for p in open_positions
+    unresolved = sorted({p['tradingsymbol'] for p in live
                          if not lot_map.get(p['tradingsymbol'])})
     if unresolved:
         st.warning(
@@ -81,7 +106,7 @@ def _account_tab(db, user_id, book, lot_map):
               "adding, editing and deploying them is blocked. Press **🔄 Refresh**."
         )
 
-    _open_positions_table(db, user_id, open_positions, lot_map)
+    _open_positions_table(db, user_id, live, lot_map)
     _create_form(db, user_id)
     st.divider()
 
@@ -91,7 +116,7 @@ def _account_tab(db, user_id, book, lot_map):
                 "open positions into it.")
         return
     for group in groups:
-        _group_panel(db, group, live_map, open_positions, lot_map)
+        _group_panel(db, group, live_map, live, lot_map)
 
 
 def _warn_imbalance(group):
@@ -111,17 +136,20 @@ def _open_positions_table(db, user_id, open_positions, lot_map):
     """
     if not open_positions:
         return
-    with st.expander(f"📋 {user_id} — open positions ({len(open_positions)})",
-                     expanded=True):
+    n_open = sum(1 for p in open_positions if p["quantity"])
+    with st.expander(f"📋 {user_id} — positions ({n_open} open, "
+                     f"{len(open_positions) - n_open} closed)", expanded=True):
         st.dataframe(
             [{
                 'Instrument': p['tradingsymbol'],
                 'Product': p['product'],
                 'Qty': p['quantity'],
                 'Lot Size': _lots(p['quantity'], lot_map.get(p['tradingsymbol'])),
+                'Traded Qty': p['basis_quantity'],
                 'Avg': p['average_price'],
                 'LTP': p['last_price'],
                 'P&L': p['pnl'],
+                'State': 'open' if p['quantity'] else 'closed',
             } for p in open_positions],
             hide_index=True,
             width='stretch',
@@ -132,6 +160,13 @@ def _open_positions_table(db, user_id, open_positions, lot_map):
                     "Lot Size",
                     help="Quantity in lots — Qty ÷ the contract's lot size "
                          "(e.g. -1300 ÷ 65 = -20 for NIFTY)."),
+                'Traded Qty': st.column_config.NumberColumn(
+                    "Traded Qty",
+                    help="Size the position had. Same as Qty while open; for a "
+                         "squared-off row Zerodha reports Qty 0, and this is what "
+                         "it held before that."),
+                'State': st.column_config.TextColumn(
+                    "State", help="Zerodha reports a squared-off leg with Qty 0."),
                 'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
                 'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
                 'P&L': st.column_config.NumberColumn(
@@ -170,76 +205,82 @@ def _create_form(db, user_id):
     with st.expander(f"➕ Create a group for {user_id}", expanded=False):
         # Keys carry the account: every tab renders at once, so a shared key
         # would make two accounts' forms the same widget.
+        st.caption("Stoploss fires when group P&L falls to or below it, target "
+                   "when it rises to or above. Either may be negative or "
+                   "positive — a positive stoploss is a profit floor. Leave one "
+                   "blank to disarm that side.")
         with st.form(f"ztrade_create_group_{user_id}", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+            c1, c2, c3, c4 = st.columns([3, 2, 2, 3])
             name = c1.text_input("Group name", placeholder="e.g. Aug Iron Condor",
                                  key=f"ztrade_newname_{user_id}")
             stoploss = c2.number_input(
                 "Stoploss (₹)", value=None, step=500.0, format="%.2f",
                 key=f"ztrade_newsl_{user_id}",
-                help="Fires when group P&L falls to or below this. May be negative "
-                     "(cut a loss) or positive (lock in a profit floor). Leave blank to disarm.",
             )
             target = c3.number_input(
                 "Target (₹)", value=None, step=500.0, format="%.2f",
                 key=f"ztrade_newtg_{user_id}",
-                help="Fires when group P&L rises to or above this. Leave blank to disarm.",
             )
-            c4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            alert_enabled = c4.checkbox("Alerts enabled", value=True,
-                                        key=f"ztrade_newalert_{user_id}")
+            channels = c4.multiselect(
+                "Notify via", CHANNEL_LABELS, default=CHANNEL_LABELS,
+                key=f"ztrade_newch_{user_id}",
+                placeholder="No alerts")
 
             if st.form_submit_button("Create group", type="primary"):
                 group, err = G.create_group(db, name, user_id, stoploss, target,
-                                            alert_enabled)
+                                            _channels(channels))
                 if err:
                     H.flash('error', err)
                 else:
-                    # Open the new group once so its picker is on screen; from
-                    # then on the expander's own state is the user's to control.
-                    st.session_state[_panel_key(group.id)] = True
+                    # Deliberately not auto-opened: which panels are expanded is
+                    # the user's business, not something a save should change.
                     H.flash('success', f"Created '{group.name}' under {user_id} — "
-                                       f"pick its positions below.")
+                                       f"open it below to pick its positions.")
                     _warn_imbalance(group)
                 st.rerun()
 
 
 # ----- one group ---------------------------------------------------------
-def _group_panel(db, group, live_map, open_positions, lot_map):
+def _group_panel(db, group, live_map, positions, lot_map):
     mark = G.mark_group(db, group, live_map)
     badge = H.STATUS_BADGE.get(group.status, group.status)
-    header = (f"**{group.name}** · {group.user_id} — {mark['n_legs']} instrument(s) · "
-              f"P&L {H.money(mark['pnl'])}")
+    # Label must not change between runs: Streamlit resets an expander to its
+    # default whenever the label does, which is what made panels snap shut on
+    # Refresh. Live P&L and the leg count live inside the panel instead.
+    header = f"**{group.name}** · {group.user_id}"
 
     with st.expander(header, key=_panel_key(group.id), on_change="rerun"):
         st.markdown(
             f"{badge} &nbsp; P&L {H.colored_money(mark['pnl'])} &nbsp;·&nbsp; "
+            f"{mark['n_legs']} instrument(s), {mark['open_legs']} open &nbsp;·&nbsp; "
             f"SL {H.money(group.stoploss)} &nbsp;·&nbsp; TGT {H.money(group.target)} "
-            f"&nbsp;·&nbsp; {'🔔 alerts on' if group.alert_enabled else '🔕 alerts off'}"
+            f"&nbsp;·&nbsp; {_channel_badge(group)}"
         )
         if group.status == G.TRIGGERED and group.trigger_message:
             st.warning(f"{group.trigger_message} ({H.ist(group.triggered_at)} IST)")
 
         _levels_form(db, group)
         _legs_editor(db, group, mark, live_map, lot_map)
-        _add_positions(db, group, open_positions, lot_map)
+        _add_positions(db, group, positions, lot_map)
         _lifecycle_bar(db, group, lot_map)
 
 
 def _levels_form(db, group):
     with st.form(f"ztrade_levels_{group.id}"):
-        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+        c1, c2, c3, c4 = st.columns([3, 2, 2, 3])
         name = c1.text_input("Group name", value=group.name, key=f"nm_{group.id}")
         stoploss = c2.number_input("Stoploss (₹)", value=group.stoploss, step=500.0,
                                    format="%.2f", key=f"sl_{group.id}")
         target = c3.number_input("Target (₹)", value=group.target, step=500.0,
                                  format="%.2f", key=f"tg_{group.id}")
-        c4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        alert_enabled = c4.checkbox("Alerts enabled", value=group.alert_enabled,
-                                    key=f"al_{group.id}")
+        channels = c4.multiselect(
+            "Notify via", CHANNEL_LABELS,
+            default=[CHANNEL_LABELS[i] for i, c in enumerate(G.ALL_CHANNELS)
+                     if c in G.channels_of(group)],
+            key=f"ch_{group.id}", placeholder="No alerts")
         if st.form_submit_button("Save settings"):
             _, err = G.update_group(db, group, name=name, stoploss=stoploss,
-                                    target=target, alert_enabled=alert_enabled)
+                                    target=target, channels=_channels(channels))
             if err:
                 H.flash('error', err)
             else:
@@ -351,14 +392,17 @@ def _legs_editor(db, group, mark, live_map, lot_map):
         st.rerun()
 
 
-def _add_positions(db, group, open_positions, lot_map):
-    st.markdown("**Add open positions**")
+def _add_positions(db, group, positions, lot_map):
+    st.markdown("**Add positions**")
+    st.caption("Closed positions can be tagged too — the group keeps their "
+               "settled P&L.")
     taken = {(leg.tradingsymbol, leg.product) for leg in G.legs_of(db, group.id)}
-    available = [p for p in open_positions
-                 if P.position_key(p['tradingsymbol'], p['product']) not in taken]
+    available = [p for p in positions
+                 if P.position_key(p['tradingsymbol'], p['product']) not in taken
+                 and p['basis_quantity']]
     if not available:
-        st.caption("Every open position is already in this group."
-                   if open_positions else "No open positions to add.")
+        st.caption("Every position is already in this group."
+                   if positions else "No positions to add.")
         return
 
     # Still tracked, just not shown: cross-group over-allocation is reported as a
@@ -369,11 +413,14 @@ def _add_positions(db, group, open_positions, lot_map):
         'Add': False,
         'Instrument': p['tradingsymbol'],
         'Product': p['product'],
-        'Position Qty': p['quantity'],
-        'Qty for group': p['quantity'],   # default: the whole position
+        # A squared-off row reports Qty 0, so offer the size it held — that is
+        # what a group can take a share of, and its settled P&L follows.
+        'Position Qty': p['basis_quantity'],
+        'Qty for group': p['basis_quantity'],   # default: the whole position
         'Avg': p['average_price'],
         'LTP': p['last_price'],
         'P&L': p['pnl'],
+        'State': 'open' if p['quantity'] else 'closed',
     } for p in available]
 
     edited = st.data_editor(
@@ -381,8 +428,8 @@ def _add_positions(db, group, open_positions, lot_map):
         key=f"ztrade_add_{group.id}",
         hide_index=True,
         width='stretch',
-        column_order=['Add', 'Instrument', 'Product', 'Position Qty', 'Qty for group',
-                      'Avg', 'LTP', 'P&L'],
+        column_order=['Add', 'Instrument', 'Position Qty', 'Qty for group',
+                      'Avg', 'LTP', 'P&L', 'State'],
         column_config={
             'Add': st.column_config.CheckboxColumn("Add"),
             'Qty for group': st.column_config.NumberColumn(
@@ -390,7 +437,10 @@ def _add_positions(db, group, open_positions, lot_map):
                 help="Defaults to the full position. Reduce it to tag only part — "
                      "for F&O it must stay a whole number of lots."),
             'Position Qty': st.column_config.NumberColumn(
-                "Position Qty", disabled=True, help="Quantity from Zerodha."),
+                "Position Qty", disabled=True,
+                help="Size available to tag — the live quantity, or what a "
+                     "squared-off position held."),
+            'State': st.column_config.TextColumn("State", disabled=True),
             'Instrument': st.column_config.TextColumn("Instrument", disabled=True),
             'Product': st.column_config.TextColumn("Product", disabled=True),
             'Avg': st.column_config.NumberColumn("Avg", format="%.2f", disabled=True),

@@ -58,8 +58,13 @@ def legs_of(db, group_id):
     )
 
 
-def create_group(db, name, user_id, stoploss=None, target=None, alert_enabled=True):
-    """Create a draft group owned by ``user_id``. Returns ``(group, error)``."""
+def create_group(db, name, user_id, stoploss=None, target=None, channels=None):
+    """Create a draft group owned by ``user_id``. Returns ``(group, error)``.
+
+    ``channels`` is the notification channels to use (see
+    :mod:`zerodha_trades.services.alerts`); ``None`` means all of them. An
+    empty list is how a group is created silent.
+    """
     name = (name or '').strip()
     if not name:
         return None, "Group name is required."
@@ -74,10 +79,9 @@ def create_group(db, name, user_id, stoploss=None, target=None, alert_enabled=Tr
     err = validate_levels(stoploss, target)
     if err:
         return None, err
-    group = TradeGroup(
-        name=name, user_id=user_id, stoploss=stoploss, target=target,
-        alert_enabled=bool(alert_enabled), status=DRAFT,
-    )
+    group = TradeGroup(name=name, user_id=user_id, stoploss=stoploss,
+                       target=target, status=DRAFT)
+    apply_channels(group, ALL_CHANNELS if channels is None else channels)
     db.add(group)
     db.commit()
     return group, None
@@ -122,7 +126,7 @@ def levels_imbalance(stoploss, target, tolerance=LEVEL_BALANCE_TOLERANCE):
             "Check for a mistyped zero.")
 
 
-def update_group(db, group, name=None, stoploss=..., target=..., alert_enabled=None):
+def update_group(db, group, name=None, stoploss=..., target=..., channels=None):
     """Patch a group's editable fields. Returns ``(group, error)``.
 
     ``stoploss`` / ``target`` use an ``...`` sentinel so ``None`` can be passed
@@ -149,10 +153,35 @@ def update_group(db, group, name=None, stoploss=..., target=..., alert_enabled=N
         group.name = name
     group.stoploss = new_sl
     group.target = new_tg
-    if alert_enabled is not None:
-        group.alert_enabled = bool(alert_enabled)
+    if channels is not None:
+        apply_channels(group, channels)
     db.commit()
     return group, None
+
+
+# Notification channels live as one column each, with alert_enabled kept in
+# step so the poller keeps a single thing to check.
+EMAIL = 'email'
+TELEGRAM = 'telegram'
+ALL_CHANNELS = (EMAIL, TELEGRAM)
+
+
+def apply_channels(group, channels):
+    """Set a group's notification channels. No channels means alerts off."""
+    picked = set(channels or ())
+    group.notify_email = EMAIL in picked
+    group.notify_telegram = TELEGRAM in picked
+    group.alert_enabled = bool(picked)
+
+
+def channels_of(group):
+    """The channels a group notifies on, as a list."""
+    picked = []
+    if group.notify_email:
+        picked.append(EMAIL)
+    if group.notify_telegram:
+        picked.append(TELEGRAM)
+    return picked
 
 
 def delete_group(db, group):
@@ -169,9 +198,12 @@ def add_leg(db, group, position, quantity=None, lot_size=None):
     point the same way as the position, not exceed it in magnitude, and — for
     derivatives — be a whole number of lots.
     """
-    pos_qty = int(position['quantity'])
+    # A closed position is still taggable: it keeps its settled P&L in the
+    # group. Validate against the size it had rather than today's zero.
+    pos_qty = int(position.get('basis_quantity') or position['quantity'])
     if pos_qty == 0:
-        return None, f"{position['tradingsymbol']} is closed (qty 0) — nothing to add."
+        return None, (f"{position['tradingsymbol']}: can't tell what size this "
+                      f"position was — nothing to add.")
     qty = pos_qty if quantity is None else int(quantity)
     err = validate_leg_quantity(qty, pos_qty, position['tradingsymbol'], lot_size)
     if err:

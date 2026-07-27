@@ -22,6 +22,11 @@ STATUS_BADGE = {
 _CSS = """
 <style>
 div[data-testid="InputInstructions"] { display: none !important; }
+/* The -/+ steppers are focusable, so Tab lands on them instead of moving
+   to the next field. Hiding them takes them out of the focus order; the
+   value is still typed directly. */
+button[data-testid="stNumberInputStepUp"],
+button[data-testid="stNumberInputStepDown"] { display: none !important; }
 </style>
 """
 

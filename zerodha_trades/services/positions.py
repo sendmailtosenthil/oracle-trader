@@ -96,7 +96,30 @@ def normalize(row):
         'pnl': float(row.get('pnl') or 0.0),
         'realised': float(row.get('realised') or 0.0),
         'unrealised': float(row.get('unrealised') or 0.0),
+        'basis_quantity': _basis_quantity(row),
     }
+
+
+def _basis_quantity(row):
+    """Signed size to tag a group against.
+
+    For an open position that is simply its quantity. A squared-off one
+    reports ``quantity == 0``, so fall back to the size it *had* — that is
+    what a group holding it was ever a share of, and without it a closed
+    position could not be added to a group at all.
+    """
+    quantity = int(row.get('quantity') or 0)
+    if quantity:
+        return quantity
+    overnight = int(row.get('overnight_quantity') or 0)
+    if overnight:
+        return overnight
+    # Opened and closed within the day: size is whichever side filled,
+    # and the sign says which came first.
+    bought = int(row.get('buy_quantity') or 0)
+    sold = int(row.get('sell_quantity') or 0)
+    size = max(abs(bought), abs(sold))
+    return -size if sold > bought else size
 
 
 def fetch(enctoken, user_id):
