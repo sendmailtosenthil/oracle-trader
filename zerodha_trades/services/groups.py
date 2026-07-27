@@ -313,10 +313,21 @@ def leg_pnl(leg, live):
 
 
 def auto_closed_pnl(leg, live):
-    """This group's pro-rata share of a squared-off position's realised P&L."""
+    """This group's pro-rata share of a squared-off position's settled P&L.
+
+    Kite does *not* put the settled amount in ``realised`` for a carry-forward
+    leg that was closed out — on a real squared-off NRML position ``realised``
+    stays 0 while ``pnl`` (and ``unrealised``) carry the figure, which is
+    ``sell_value - buy_value``. So take ``pnl``, which is Kite's own total for
+    the row either way, and fall back to ``realised`` only if it is the one
+    populated.
+    """
     basis = abs(leg.source_quantity or 0)
     share = (abs(leg.quantity) / basis) if basis else 0.0
-    return (live.get('realised') or 0.0) * share
+    settled = live.get('pnl')
+    if not settled:
+        settled = live.get('realised') or 0.0
+    return settled * share
 
 
 def set_closed_pnl(db, leg, value, state):
@@ -374,7 +385,10 @@ def mark_group(db, group, live_map):
             'state': state,
             'overridden': state != 'open' and leg.frozen_pnl is not None,
             'last_price': live['last_price'] if live else None,
-            'average_price': live['average_price'] if live else leg.avg_price,
+            # Kite zeroes average_price once a position is squared off, so fall
+            # back to what the leg was tagged at rather than showing 0.00.
+            'average_price': (live['average_price'] if live and live['average_price']
+                              else leg.avg_price),
             'position_quantity': live['quantity'] if live else None,
         })
     return {
