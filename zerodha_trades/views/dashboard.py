@@ -126,8 +126,7 @@ def _card(mark):
             f"<b>{H.money(group.target)}</b></span></div>",
             unsafe_allow_html=True,
         )
-        # Bar sits directly under the SL/Target row, which labels its two ends.
-        st.progress(_gauge(group, pnl))
+        _gauge_bar(group, pnl)
 
         if group.status == G.TRIGGERED and group.trigger_message:
             st.error(f"{group.trigger_message}\n\n_{H.ist(group.triggered_at)} IST_")
@@ -197,9 +196,42 @@ def _positions_dialog(mark):
         st.rerun()
 
 
+# Only one side is ever in play, so only one bar is ever drawn: red running
+# toward the stoploss while the group is down, green toward the target while it
+# is up. st.progress can't be coloured, hence the hand-rolled bar.
+_RED = "#c0392b"
+_GREEN = "#0a7d33"
+_TRACK = "rgba(128,128,128,0.22)"   # readable on both light and dark themes
+
+
 def _gauge(group, pnl):
-    """Where P&L sits between stoploss and target, as 0.0-1.0."""
-    low, high = group.stoploss, group.target
-    if low is None or high is None or high <= low:
-        return 0.0
-    return min(1.0, max(0.0, (pnl - low) / (high - low)))
+    """``(fraction, colour, caption)`` for the level currently in play.
+
+    The fraction is how far P&L has travelled toward that level, not its
+    position between the two — a group at -₹5,000 against a -₹15,000 stoploss
+    reads one third of the way to being stopped out.
+    """
+    if pnl < 0:
+        level, colour, name = group.stoploss, _RED, "stoploss"
+    else:
+        level, colour, name = group.target, _GREEN, "target"
+
+    if not level:
+        return 0.0, colour, f"No {name} set"
+    # Same-signed level and P&L give a positive ratio; an opposite-signed one
+    # (a profit floor with the group down, say) clamps to empty rather than
+    # drawing a bar that means nothing.
+    fraction = min(1.0, max(0.0, pnl / level))
+    return fraction, colour, f"{fraction * 100:.0f}% of the {H.money(level)} {name}"
+
+
+def _gauge_bar(group, pnl):
+    fraction, colour, caption = _gauge(group, pnl)
+    st.markdown(
+        f"<div style='background:{_TRACK};border-radius:4px;height:8px;"
+        f"overflow:hidden;margin:4px 0 2px'>"
+        f"<div style='width:{fraction * 100:.1f}%;height:100%;background:{colour};"
+        f"border-radius:4px'></div></div>"
+        f"<div style='font-size:12px;color:#888;margin-bottom:4px'>{caption}</div>",
+        unsafe_allow_html=True,
+    )

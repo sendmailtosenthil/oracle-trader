@@ -68,12 +68,27 @@ def _send_email(group, pnl, trigger_type, message, recipient):
 
 
 def _send_telegram(group, pnl, trigger_type, message):
-    icon = "🎯" if trigger_type == 'TARGET' else "🛑"
+    """Post the trigger to Telegram, leading with the outcome.
+
+    Telegram's HTML mode has no colour tags — only bold/italic/code and the
+    like — so the red/green comes from a coloured block emoji on the headline
+    and on the level that was hit. That is the only way to tint text there.
+    """
+    hit_target = trigger_type == 'TARGET'
+    headline = "🟩 <b>TARGET ACHIEVED</b>" if hit_target else "🟥 <b>STOPLOSS REACHED</b>"
+    # Mark the level that fired; leave the other as plain text.
+    target_line = (f"🟩 Target: <b>{_money(group.target)}</b>" if hit_target
+                   else f"Target: {_money(group.target)}")
+    stop_line = (f"Stoploss: {_money(group.stoploss)}" if hit_target
+                 else f"🟥 Stoploss: <b>{_money(group.stoploss)}</b>")
+
     text = (
-        f"{icon} <b>{_esc(group.name)}</b> <code>{_esc(group.user_id or '')}</code>\n"
-        f"{_esc(message)}\n\n"
+        f"{headline}\n\n"
+        f"<b>{_esc(group.name)}</b> <code>{_esc(group.user_id or '')}</code>\n"
         f"P&amp;L: <b>{_money(pnl)}</b>\n"
-        f"Stoploss {_money(group.stoploss)} · Target {_money(group.target)}\n\n"
+        f"{target_line}\n"
+        f"{stop_line}\n\n"
+        f"{_esc(message)}\n\n"
         f"<i>Alert only — nothing was traded.</i>"
     )
     return send_message(text)
