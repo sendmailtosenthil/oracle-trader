@@ -121,9 +121,9 @@ class Poller:
         # could trip a level on numbers the broker never gave us.
         markable = [g for g in watched if g.user_id in maps]
         marks = G.mark_all(db, maps, groups=markable)
-        # Pin the P&L of anything that has just stopped being open, before the
-        # broker revises realised out from under it.
-        G.capture_closed_pnl(db, marks)
+        # Bank the P&L of anything that has just stopped being open, before the
+        # broker revises realised out from under it — or drops the row tomorrow.
+        G.bank_settled(db, marks)
         fired = G.apply_marks(db, marks, on_trigger=self._notify(settings))
 
         settings.last_poll_at = datetime.datetime.utcnow()

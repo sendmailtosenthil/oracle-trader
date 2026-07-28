@@ -57,13 +57,24 @@ database encrypted. Delete those two lines from `.env` afterwards — the script
 reminds you. Use `--owner USER` to assign to somebody other than the first
 administrator.
 
-Upgrading a database that predates per-page permissions? The app applies the
-schema change itself on startup, so a normal `git pull` + restart is enough.
-To do it ahead of time (and see exactly what changed):
+## Upgrades
+The app applies its own additive schema changes on startup, so a normal
+`git pull` + restart is enough. Each migration can also be run ahead of time to
+see exactly what it would change — all are idempotent and take `--dry-run`
+except the first:
 ```bash
-venv/bin/python -m migrations.add_user_permissions   # idempotent
+venv/bin/python -m migrations.add_user_permissions        # logins -> per-page permissions
+venv/bin/python -m migrations.move_zerodha_credentials    # accounts -> owners + encrypted creds
+venv/bin/python -m migrations.add_settled_pnl             # leg P&L -> banked + live
 ```
 Existing logins become administrators, so nobody is locked out by the upgrade.
+
+`add_settled_pnl` splits a trade leg's P&L into what closed cycles already made
+and what the position currently held is doing. That is what lets a contract be
+closed and re-opened without losing the first cycle: the two figures add up, the
+banked one survives Zerodha dropping the position from the book, and it can be
+corrected by hand once nothing is running against it. A correction applies to the
+total as it stood when typed, so later cycles still add on top of it.
 
 `ORACLE_ADMIN_USER` / `ORACLE_ADMIN_PASSWORD` in `.env` only bootstrap the first
 administrator on an empty database; after that the database is the source of

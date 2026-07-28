@@ -372,22 +372,81 @@ def allocation_map(db, exclude_group_id=None, user_id=None):
 
 
 # ----- marking -----------------------------------------------------------
-def leg_pnl(leg, live):
-    """``(pnl, state)`` for one leg. State is ``open`` / ``closed`` / ``missing``.
+# A leg's P&L is two numbers that add up:
+#
+#   settled  what completed position cycles already made. Banked when a position
+#            closes, so it survives Kite dropping the row the next day, and
+#            correctable by hand afterwards.
+#   open     what the position currently held is doing, marked live.
+#
+# They coexist because the same contract can be closed and opened again: the
+# first cycle's result stays banked while the new one runs, and the leg shows the
+# combined figure. `state` describes the *current* position only, which is what
+# decides whether the settled part may be edited.
 
-    An open leg is always marked live. Once it is no longer open its P&L is
-    settled, and ``frozen_pnl`` — captured automatically when it closes, and
-    editable afterwards — wins over the derived figure. That override matters
-    because splitting a squared-off position's realised P&L across groups is
-    only a pro-rata guess; the user knows what actually filled.
+def banked_of(leg):
+    """The automatically accumulated total of completed cycles."""
+    return float(getattr(leg, 'settled_pnl', 0.0) or 0.0)
+
+
+def settled_of(leg):
+    """A leg's settled P&L, honouring a correction the user made.
+
+    A correction is not a permanent replacement: it fixes the total *as it stood*
+    when it was typed, and cycles completed afterwards still add on top. So a leg
+    corrected to ₹2,000 that later banks another ₹325 shows ₹2,325 — otherwise
+    correcting one bad fill would quietly discard every trade after it.
     """
+    override = getattr(leg, 'settled_override', None)
+    if override is None:
+        return banked_of(leg)
+    since = banked_of(leg) - float(getattr(leg, 'settled_base', 0.0) or 0.0)
+    return float(override) + since
+
+
+def pending_cycle_pnl(leg, live):
+    """A finished cycle's amount that hasn't been banked yet.
+
+    Banking is a write, so it happens on the poller's cycle and on a page load —
+    but the figure must be right the instant a position closes, before either.
+    Marking therefore adds the pending amount itself, which makes banking purely
+    a persistence step: the total is identical either side of it. Without this a
+    group read as 0 on the tick it closed, and the poller could trip a stoploss
+    on that.
+    """
+    if not getattr(leg, 'cycle_open', False):
+        return 0.0                       # nothing running, nothing to settle
+    if live is not None and live['quantity']:
+        return 0.0                       # still open — that's the live mark's job
+    if live is not None:
+        return auto_closed_pnl(leg, live)
+    return float(getattr(leg, 'last_mark_pnl', 0.0) or 0.0)
+
+
+def open_pnl(leg, live):
+    """Live mark of the position this leg currently holds. 0 when it holds none."""
+    if live is None or not live['quantity']:
+        return 0.0
+    return leg.quantity * (live['last_price'] - live['average_price'])
+
+
+def leg_state(live):
+    """``open`` (position held) / ``closed`` (squared off) / ``missing`` (row gone)."""
     if live is None:
-        return (leg.frozen_pnl or 0.0), 'missing'
-    if live['quantity'] == 0:
-        if leg.frozen_pnl is not None:
-            return leg.frozen_pnl, 'closed'
-        return auto_closed_pnl(leg, live), 'closed'
-    return leg.quantity * (live['last_price'] - live['average_price']), 'open'
+        return 'missing'
+    return 'open' if live['quantity'] else 'closed'
+
+
+def leg_settled(leg, live):
+    """Everything settled on this leg: banked, plus a close not yet banked."""
+    return settled_of(leg) + pending_cycle_pnl(leg, live)
+
+
+def leg_pnl(leg, live):
+    """``(pnl, state)`` for one leg — settled plus live, so a re-opened contract
+    carries its history rather than starting from zero.
+    """
+    return leg_settled(leg, live) + open_pnl(leg, live), leg_state(live)
 
 
 def auto_closed_pnl(leg, live):
@@ -399,8 +458,13 @@ def auto_closed_pnl(leg, live):
     ``sell_value - buy_value``. So take ``pnl``, which is Kite's own total for
     the row either way, and fall back to ``realised`` only if it is the one
     populated.
+
+    The share is against the size the position actually held for *this* cycle
+    (``basis_quantity``), falling back to the size recorded when the leg was
+    tagged. A second cycle can be a different size from the first, so the
+    original figure is the wrong divisor once a contract has been re-opened.
     """
-    basis = abs(leg.source_quantity or 0)
+    basis = abs(live.get('basis_quantity') or 0) or abs(leg.source_quantity or 0)
     share = (abs(leg.quantity) / basis) if basis else 0.0
     settled = live.get('pnl')
     if not settled:
@@ -408,37 +472,80 @@ def auto_closed_pnl(leg, live):
     return settled * share
 
 
-def set_closed_pnl(db, leg, value, state):
-    """Override (or clear) a closed leg's P&L. Returns an error string or None.
+def set_settled_pnl(db, leg, value, state):
+    """Correct (or clear) a leg's settled P&L. Returns an error string or None.
 
-    Only meaningful once the leg has stopped moving: an open leg is marked
-    from the live price, so a hand-set value would be overwritten next tick.
+    Refused while the position is open: that part of the figure is marked from
+    the live price and would be overwritten on the next tick. A re-opened leg is
+    therefore locked until it closes again — the settled history is only editable
+    when nothing is running against it.
+
+    The correction is recorded against the banked total it was typed over, so
+    later cycles add to it instead of being swallowed. Clearing it restores the
+    automatic figure.
     """
     if state == 'open':
         return (f"{leg.tradingsymbol} is still open — its P&L is marked live and "
                 f"cannot be set by hand. Close the position first.")
-    leg.frozen_pnl = None if value is None else float(value)
+    if value is None:
+        leg.settled_override = None
+        leg.settled_base = None
+    else:
+        leg.settled_override = float(value)
+        leg.settled_base = banked_of(leg)
+        # The typed figure is what the user saw, which already included any
+        # just-closed cycle waiting to be banked. Close that cycle out here so
+        # banking can't add it a second time.
+        leg.cycle_open = False
+        leg.last_mark_pnl = None
     db.commit()
     return None
 
 
-def capture_closed_pnl(db, marks):
-    """Freeze the P&L of legs that have just stopped being open.
+def bank_settled(db, marks):
+    """Move finished cycles into each leg's banked P&L. Returns how many banked.
 
-    Called by the poller. Kite keeps revising ``realised`` after a square-off,
-    so pinning the value at the moment the leg closed stops a settled group
-    drifting — and gives the user a concrete number to correct.
+    Called by the poller every cycle, and by Group Management when its owner
+    loads the page. Two things happen per leg:
+
+    * while a position is open, remember the live mark and that a cycle is
+      running;
+    * the first time it is seen not-open, add that cycle's settled amount to the
+      bank and close the cycle out.
+
+    Banking from the live row is preferred; if Kite dropped the row before we
+    ever saw it at quantity 0 (a poll missed over a weekend, say) the last
+    remembered mark is banked instead, so the number is never simply lost.
+    Because the cycle flag is cleared as it banks, a re-opened contract starts a
+    fresh cycle and is banked again on its own close.
     """
-    frozen = 0
+    banked, dirty = 0, False
     for mark in marks:
         for item in mark['legs']:
-            leg = item['leg']
-            if item['state'] != 'open' and leg.frozen_pnl is None:
-                leg.frozen_pnl = item['pnl']
-                frozen += 1
-    if frozen:
+            leg, live, state = item['leg'], item['live'], item['state']
+            if state == 'open':
+                # Remembered every tick: this is what gets banked if the row
+                # vanishes before we see it squared off, so it has to be
+                # committed even on a call where nothing banks.
+                if not leg.cycle_open:
+                    leg.cycle_open = True
+                    dirty = True
+                if leg.last_mark_pnl != item['open_pnl']:
+                    leg.last_mark_pnl = item['open_pnl']
+                    dirty = True
+                continue
+            if not leg.cycle_open:
+                continue
+            # Exactly what marking was already counting as pending, so the total
+            # doesn't move as it lands.
+            leg.settled_pnl = banked_of(leg) + pending_cycle_pnl(leg, live)
+            leg.cycle_open = False
+            leg.last_mark_pnl = None
+            banked += 1
+            dirty = True
+    if dirty:
         db.commit()
-    return frozen
+    return banked
 
 
 def mark_group(db, group, live_map):
@@ -452,7 +559,10 @@ def mark_group(db, group, live_map):
     open_legs = 0
     for leg in legs_of(db, group.id):
         live = live_map.get((leg.tradingsymbol, leg.product))
-        pnl, state = leg_pnl(leg, live)
+        state = leg_state(live)
+        banked = leg_settled(leg, live)
+        running = open_pnl(leg, live)
+        pnl = banked + running
         total += pnl
         if state == 'open':
             open_legs += 1
@@ -460,8 +570,12 @@ def mark_group(db, group, live_map):
             'leg': leg,
             'live': live,
             'pnl': pnl,
+            # The two halves, so the UI can show what is banked separately from
+            # what is still moving — and let the banked half be corrected.
+            'settled': banked,
+            'open_pnl': running,
             'state': state,
-            'overridden': state != 'open' and leg.frozen_pnl is not None,
+            'overridden': getattr(leg, 'settled_override', None) is not None,
             'last_price': live['last_price'] if live else None,
             # Kite zeroes average_price once a position is squared off, so fall
             # back to what the leg was tagged at rather than showing 0.00.

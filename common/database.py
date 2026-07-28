@@ -267,7 +267,21 @@ class TradeGroupLeg(Base):
     quantity = Column(Integer, nullable=False)          # signed qty owned by this group
     source_quantity = Column(Integer, nullable=False)   # broker qty when added (pro-rate basis)
     avg_price = Column(Float, default=0.0)              # position avg at add time (reference)
-    frozen_pnl = Column(Float, nullable=True)           # last P&L once the position disappeared
+    frozen_pnl = Column(Float, nullable=True)           # legacy: pre-cycle settled figure
+    # A leg can be closed and the same contract opened again, so its P&L is two
+    # numbers that add up: what is already banked, and what the current position
+    # is doing. `settled_pnl` accumulates every completed cycle;
+    # `settled_override` is the user's correction of that total and wins when
+    # set. `cycle_open` says a position is in progress (so its close is still to
+    # be banked), and `last_mark_pnl` is the most recent live mark — banked as a
+    # fallback if Kite drops the row before we ever see it at quantity 0.
+    settled_pnl = Column(Float, default=0.0)
+    settled_override = Column(Float, nullable=True)
+    # What settled_pnl stood at when the override was typed, so cycles completed
+    # afterwards add to the correction instead of being swallowed by it.
+    settled_base = Column(Float, nullable=True)
+    cycle_open = Column(Boolean, default=False)
+    last_mark_pnl = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
@@ -371,6 +385,14 @@ def _ensure_columns():
                           ('notify_telegram', 'BOOLEAN DEFAULT 1'),
                           ('owner', 'VARCHAR'),
                           ('shared', 'BOOLEAN DEFAULT 0')],
+        # Legs gained a banked/live P&L split so a contract can be closed and
+        # re-opened without losing what the first cycle made. frozen_pnl is
+        # migrated into settled_pnl by migrations/add_settled_pnl.py.
+        'ztrade_group_legs': [('settled_pnl', 'FLOAT DEFAULT 0.0'),
+                              ('settled_override', 'FLOAT'),
+                              ('settled_base', 'FLOAT'),
+                              ('cycle_open', 'BOOLEAN DEFAULT 0'),
+                              ('last_mark_pnl', 'FLOAT')],
         'broker_config': [('owner', 'VARCHAR'),
                           ('password_enc', 'VARCHAR'),
                           ('totp_enc', 'VARCHAR'),
