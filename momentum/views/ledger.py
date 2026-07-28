@@ -3,10 +3,14 @@ import pandas as pd
 import streamlit as st
 
 from common.database import MomentumTrade, MomentumHolding
+from common import permissions as P
 from momentum.services import strategy
+
+PAGE = "momentum.ledger"
 
 
 def render(db):
+    P.guard(PAGE)
     st.title("📒 Momentum — Ledger & History")
 
     trades = (db.query(MomentumTrade)
@@ -65,6 +69,8 @@ def render(db):
 
 
 def _maintenance(db):
+    if not P.can_edit(PAGE):
+        return
     st.divider()
     with st.expander("⚙️ Maintenance"):
         st.caption("Rebuild holdings & cash from the trade ledger, or wipe the "

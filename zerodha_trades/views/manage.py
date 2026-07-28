@@ -11,9 +11,12 @@ squared off stays in its group with its P&L frozen.
 """
 import streamlit as st
 
+from common import permissions as ACL   # `P` is taken by positions in this module
 from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
+
+PAGE = "ztrade.manage"
 
 
 # Display labels, positionally matched to G.ALL_CHANNELS.
@@ -46,6 +49,7 @@ def _panel_key(group_id):
 
 
 def render(db):
+    ACL.guard(PAGE)
     st.title("📦 Zerodha Trades — Group Management")
     H.inject_css()
     H.render_flash()

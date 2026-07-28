@@ -7,10 +7,17 @@ import hashlib
 Base = declarative_base()
 
 class User(Base):
+    """A login. Users are managed in the app (Setup › User Management), not in
+    config: ``permissions`` is the JSON map described in
+    :mod:`common.permissions`, and ``is_admin`` overrides it with full access.
+    """
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
+    is_admin = Column(Boolean, default=False)
+    permissions = Column(String, nullable=True)   # JSON: {page_key: none|read|edit}
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class Strategy(Base):
     __tablename__ = 'strategies'
@@ -320,6 +327,14 @@ def _ensure_columns():
     won't alter existing tables). Idempotent and additive."""
     from sqlalchemy import text
     wanted = {
+        # Logins predating per-page permissions were all full-access admins.
+        'users': [('is_admin', 'BOOLEAN DEFAULT 1'),
+                  ('permissions', 'VARCHAR'),
+                  ('created_at', 'DATETIME')],
+        # Bees trades gained charge tracking after the first databases were built.
+        'trades': [('charges', 'FLOAT DEFAULT 0.0'),
+                   ('charges_breakdown', 'VARCHAR'),
+                   ('pledge', 'BOOLEAN DEFAULT 0')],
         'momentum_trades': [('charges', 'FLOAT DEFAULT 0.0')],
         'momentum_rankings': [('raw_rank', 'INTEGER')],
         'momentum_config': [("scoring_model", "VARCHAR DEFAULT 'risk_adjusted'"),
@@ -356,21 +371,20 @@ def hash_password(password):
 
 def seed_data():
     db = SessionLocal()
-    # Admin user credentials come from the environment (never hard-code secrets:
-    # this repo is public). ORACLE_ADMIN_PASSWORD is the source of truth — when
-    # set, the admin user is created if missing and its password is kept in sync
-    # on every startup, so rotating the password is just editing .env + restart.
-    admin_user = os.environ.get('ORACLE_ADMIN_USER', 'senthil')
-    admin_pass = os.environ.get('ORACLE_ADMIN_PASSWORD')
-    existing = db.query(User).filter(User.username == admin_user).first()
-    if admin_pass:
-        if existing:
-            existing.password_hash = hash_password(admin_pass)
+    # Logins live in this table and are managed in the app (Setup › User
+    # Management). The environment only bootstraps the very first administrator
+    # on an empty database — it is not the source of truth, so a password
+    # changed in the app is never silently reverted on the next restart.
+    # Locked out? `python -m scripts.manage_users passwd <user>` on the host.
+    if not db.query(User).first():
+        admin_user = os.environ.get('ORACLE_ADMIN_USER', 'senthil')
+        admin_pass = os.environ.get('ORACLE_ADMIN_PASSWORD')
+        if admin_pass:
+            db.add(User(username=admin_user, password_hash=hash_password(admin_pass),
+                        is_admin=True))
         else:
-            db.add(User(username=admin_user, password_hash=hash_password(admin_pass)))
-    elif not existing:
-        print("WARNING: ORACLE_ADMIN_PASSWORD not set — no admin user created. "
-              "Set it in .env and restart to enable login.")
+            print("WARNING: no users exist and ORACLE_ADMIN_PASSWORD is not set — "
+                  "no admin user created. Set it in .env and restart to enable login.")
 
 
     # Create NIFTY vs GOLD Strategy

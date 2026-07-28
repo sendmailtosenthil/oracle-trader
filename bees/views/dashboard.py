@@ -3,11 +3,15 @@ import streamlit as st
 import plotly.graph_objects as go
 
 from common.database import Portfolio, CashFlow, Trade, PendingSwitch
+from common import permissions as P
 from bees.donchian import evaluate_donchian_intraday
 from bees.services.finance import calculate_xirr, total_charges, realized_pnl_by_asset
 
+PAGE = "bees.dashboard"
+
 
 def render(db, strategies):
+    P.guard(PAGE)
     st.title("Project Oracle: Live Portfolio")
 
     for strat in strategies:
@@ -66,12 +70,15 @@ def render(db, strategies):
 
         pending = db.query(PendingSwitch).filter(PendingSwitch.strategy_id == strat.id, PendingSwitch.status == 'PENDING').first()
 
-        # Auto-heal: If user manually executed the switch via the Ledger, auto-complete the pending alert
+        # Auto-heal: If user manually executed the switch via the Ledger, auto-complete the pending alert.
+        # A read-only viewer sees the healed state but doesn't write it — the
+        # next visit by someone with edit access closes the record.
         if pending:
             from_port = next(p for p in portfolios if p.asset == pending.from_asset)
             if from_port.units <= 0.0001:
-                pending.status = 'COMPLETED'
-                db.commit()
+                if P.can_edit(PAGE):
+                    pending.status = 'COMPLETED'
+                    db.commit()
                 pending = None
 
         if pending:

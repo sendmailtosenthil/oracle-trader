@@ -14,8 +14,10 @@ emitted on the following run rather than immediately before an ``st.rerun()``.
 import streamlit as st
 import streamlit.components.v1 as components
 
-from common.database import get_db, User, hash_password
+from common.database import get_db, hash_password
+from common import permissions as P
 from common import session as S
+from common import users as U
 
 _PENDING = "_auth_cookie_write"   # token to persist, or "" to clear
 
@@ -95,8 +97,10 @@ def require_auth():
     if st.button("Login"):
         db = next(get_db())
         try:
-            user = db.query(User).filter(User.username == username).first()
+            # Usernames are stored lower-case, so the login box is case-blind.
+            user = U.get_user(db, username)
             if user and user.password_hash == hash_password(password):
+                username = user.username
                 st.session_state["authenticated"] = True
                 st.session_state["username"] = username
                 if remember:
@@ -124,5 +128,6 @@ def logout():
             db.close()
     st.session_state["authenticated"] = False
     st.session_state.pop("username", None)
+    P.clear()
     _queue_cookie("")   # cleared on the login page's render
     st.rerun()

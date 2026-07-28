@@ -7,12 +7,16 @@ import streamlit as st
 
 from common.database import BrokerConfig
 from common.broker import is_zerodha_token_valid
+from common import permissions as P
 from momentum.services import data as mdata
 from momentum.services import strategy
 from momentum.views import _helpers as H
 
+PAGE = "momentum.rebalance"
+
 
 def render(db):
+    P.guard(PAGE)
     st.title("🔁 Momentum — Rebalance")
 
     cfg = strategy.get_config(db)

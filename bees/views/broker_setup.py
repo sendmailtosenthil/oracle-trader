@@ -17,6 +17,9 @@ from common.broker import (
     normalise_user_id,
     save_account,
 )
+from common import permissions as P
+
+PAGE = "setup.broker"
 
 
 def _status(account):
@@ -29,6 +32,7 @@ def _status(account):
 
 
 def render(db):
+    P.guard(PAGE)
     st.title("Broker Setup & Integrations")
     st.write("Configure your API keys and tokens for broker integration.")
 

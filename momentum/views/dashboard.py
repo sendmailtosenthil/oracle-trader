@@ -2,12 +2,16 @@
 import pandas as pd
 import streamlit as st
 
+from common import permissions as P
 from momentum.services import data as mdata
 from momentum.services import strategy
 from momentum.views import _helpers as H
 
+PAGE = "momentum.dashboard"
+
 
 def render(db):
+    P.guard(PAGE)
     st.title("📈 Momentum — Nifty500")
 
     cfg = strategy.get_config(db)

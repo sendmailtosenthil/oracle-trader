@@ -8,15 +8,24 @@ from common.database import BrokerConfig, DownloadJob, DownloadStat
 from common.broker import is_zerodha_token_valid
 from common.notifications import send_email
 from common.timez import today_ist, to_ist
+from common import permissions as P
 from downloader.services import core
+
+PAGE = "downloader.download"
 
 
 def render(db):
+    P.guard(PAGE)
     st.title("📥 Market Data Downloader")
     st.write(
         "Download minute-level NIFTY / BANKNIFTY index, India VIX, futures and "
         "options from Zerodha, upload to Google Drive, and email a summary."
     )
+
+    # Read-only viewers get the history below, not the trigger.
+    if not P.readonly_note(PAGE, "the download history"):
+        _render_history(db)
+        return
 
     broker_config = db.query(BrokerConfig).filter(BrokerConfig.broker_name == 'ZERODHA').first()
     if not broker_config or not is_zerodha_token_valid(broker_config.enctoken, broker_config.user_id):

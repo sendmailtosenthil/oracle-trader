@@ -9,10 +9,13 @@ import datetime
 
 import streamlit as st
 
+from common import permissions as ACL   # `P` is taken by positions in this module
 from zerodha_trades import poller as PL
 from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
+
+PAGE = "ztrade.dashboard"
 
 CARDS_PER_ROW = 3
 
@@ -21,6 +24,7 @@ OPEN_DIALOG = "_ztrade_open_dialog"
 
 
 def render(db):
+    ACL.guard(PAGE)
     st.title("📦 Zerodha Trades — Dashboard")
     H.inject_css()
 
@@ -52,26 +56,31 @@ def _poller_bar(db):
     fresh = age is not None and (datetime.datetime.utcnow() - age).total_seconds() <= 120
     window_ok, reason = PL.should_poll(settings)
 
-    c1, c2, c3, c4 = st.columns([3, 1.4, 1.4, 1.2])
+    # Read-only viewers get the health line; the poller's controls are edits.
+    editable = ACL.can_edit(PAGE)
+    cols = st.columns([3, 1.4, 1.4, 1.2]) if editable else st.columns(1)
+    c1 = cols[0]
     icon = "🟢" if fresh else ("🟡" if window_ok else "⚪")
     c1.caption(f"{icon} Last poll {H.ist(settings.last_poll_at)} IST · "
                f"prices {H.ist(age)} IST · {settings.last_poll_status or 'no polls yet'}")
 
-    seconds = c2.number_input("Poll every (sec)", min_value=1, max_value=3600,
-                              value=int(settings.poll_seconds or 10), step=5,
-                              key="ztrade_poll_seconds")
-    enabled = c3.checkbox("Poller on", value=bool(settings.poller_enabled),
-                          key="ztrade_poller_on")
-    test_mode = c3.checkbox(
-        "Test mode", value=bool(settings.test_mode), key="ztrade_test_mode",
-        help="Poll outside 09:15-15:45 IST and on non-trading days. For testing "
-             "only — leave off so the poller stays quiet when the market is shut.")
-    if c4.button("Save", width='stretch'):
-        settings.poll_seconds = int(seconds)
-        settings.poller_enabled = bool(enabled)
-        settings.test_mode = bool(test_mode)
-        db.commit()
-        st.rerun()
+    if editable:
+        c2, c3, c4 = cols[1], cols[2], cols[3]
+        seconds = c2.number_input("Poll every (sec)", min_value=1, max_value=3600,
+                                  value=int(settings.poll_seconds or 10), step=5,
+                                  key="ztrade_poll_seconds")
+        enabled = c3.checkbox("Poller on", value=bool(settings.poller_enabled),
+                              key="ztrade_poller_on")
+        test_mode = c3.checkbox(
+            "Test mode", value=bool(settings.test_mode), key="ztrade_test_mode",
+            help="Poll outside 09:15-15:45 IST and on non-trading days. For testing "
+                 "only — leave off so the poller stays quiet when the market is shut.")
+        if c4.button("Save", width='stretch'):
+            settings.poll_seconds = int(seconds)
+            settings.poller_enabled = bool(enabled)
+            settings.test_mode = bool(test_mode)
+            db.commit()
+            st.rerun()
 
     if settings.test_mode:
         st.warning("🧪 **Test mode is on** — polling ignores market hours and "

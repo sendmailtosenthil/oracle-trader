@@ -5,10 +5,14 @@ import streamlit as st
 
 from common.database import Strategy, CashFlow, PendingSwitch, Trade, recalculate_portfolio_from_ledger
 from common.timez import today_ist
+from common import permissions as P
 from bees.services.charges import reconcile_strategy_charges
+
+PAGE = "bees.operations"
 
 
 def render(db, strategies):
+    P.guard(PAGE)
     st.title("Operations Desk")
 
     tab1, tab2, tab3, tab4 = st.tabs(

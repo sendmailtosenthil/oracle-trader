@@ -3,14 +3,19 @@ import pandas as pd
 import streamlit as st
 
 from common.database import Portfolio, CashFlow, Trade, recalculate_portfolio_from_ledger
+from common import permissions as P
 from bees.services.charges import reconcile_strategy_charges
 from bees.services.finance import realized_pnl_by_asset, realized_charges_by_asset
 from bees.services.market_data import get_asset_metrics
 
+PAGE = "bees.ledger"
+
 
 def render(db, strategies):
+    P.guard(PAGE)
     st.title("Trade Ledger & History")
-    st.write("View and inline-edit all your executed trades. Changes here will instantly recalculate your live portfolio.")
+    if P.readonly_note(PAGE, "holdings, cash flows and trades"):
+        st.write("View and inline-edit all your executed trades. Changes here will instantly recalculate your live portfolio.")
 
     target_strat_ledger = st.selectbox("Select Strategy to View", [s.name for s in strategies], key="strat_ledger")
     strat_ledger = next(s for s in strategies if s.name == target_strat_ledger)
@@ -131,14 +136,18 @@ def _render_cash_flows(db, strat_ledger):
 
     cf_styled = cf_df.style.map(_color_amount, subset=['Amount'])
 
+    editable = P.can_edit(PAGE)
     edited_cfs = st.data_editor(
         cf_styled,
         column_config=cf_columns_config,
-        num_rows="dynamic",
+        num_rows="dynamic" if editable else "fixed",
+        disabled=not editable,
         use_container_width=True,
         hide_index=True,
         key=f"cf_editor_{strat_ledger.id}_{page}_{page_size}"
     )
+    if not editable:
+        return
     st.caption("⚠️ Save changes before switching pages — edits made on a page are only persisted when you save that page.")
 
     if st.button("Save Cash Flow Changes", type="primary", key="save_cf"):
@@ -280,14 +289,18 @@ def _render_trade_ledger(db, strat_ledger):
 
     styled_df = page_df.style.map(color_pnl, subset=['Realized PnL'])
 
+    editable = P.can_edit(PAGE)
     edited_trades = st.data_editor(
         styled_df,
         column_config=columns_config,
-        num_rows="dynamic",
+        num_rows="dynamic" if editable else "fixed",
+        disabled=not editable,
         use_container_width=True,
         hide_index=True,
         key=f"trade_editor_{strat_ledger.id}_{page}_{page_size}"
     )
+    if not editable:
+        return
     st.caption("⚠️ Save changes before switching pages — edits made on a page are only persisted when you save that page.")
 
     if st.button("Save Ledger Changes & Recalculate Portfolio", type="primary"):
