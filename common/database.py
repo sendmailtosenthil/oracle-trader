@@ -282,6 +282,10 @@ class TradeGroupLeg(Base):
     settled_base = Column(Float, nullable=True)
     cycle_open = Column(Boolean, default=False)
     last_mark_pnl = Column(Float, nullable=True)
+    # How many position cycles have closed on this leg. 0 means nothing has ever
+    # settled — which is not the same as having settled to zero, so the UI can
+    # leave the cell blank instead of claiming a figure.
+    cycles = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
@@ -392,7 +396,8 @@ def _ensure_columns():
                               ('settled_override', 'FLOAT'),
                               ('settled_base', 'FLOAT'),
                               ('cycle_open', 'BOOLEAN DEFAULT 0'),
-                              ('last_mark_pnl', 'FLOAT')],
+                              ('last_mark_pnl', 'FLOAT'),
+                              ('cycles', 'INTEGER DEFAULT 0')],
         'broker_config': [('owner', 'VARCHAR'),
                           ('password_enc', 'VARCHAR'),
                           ('totp_enc', 'VARCHAR'),

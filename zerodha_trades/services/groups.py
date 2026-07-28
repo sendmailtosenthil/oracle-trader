@@ -407,6 +407,21 @@ def settled_of(leg):
     return float(override) + since
 
 
+def has_settled(leg, live):
+    """Has anything on this leg actually settled?
+
+    True once a position cycle has closed on it, or the user has corrected the
+    figure by hand. Distinct from "settled to 0.00": a leg that has never been
+    closed has no settled P&L at all, and saying ₹0.00 would assert something
+    untrue. A cycle that has closed but not yet been banked counts.
+    """
+    if getattr(leg, 'settled_override', None) is not None:
+        return True
+    if int(getattr(leg, 'cycles', 0) or 0) > 0:
+        return True
+    return bool(getattr(leg, 'cycle_open', False)) and leg_state(live) == CLOSED
+
+
 def pending_cycle_pnl(leg, live):
     """A finished cycle's amount that hasn't been banked yet.
 
@@ -555,6 +570,7 @@ def bank_settled(db, marks):
             leg.settled_pnl = banked_of(leg) + pending_cycle_pnl(leg, live)
             leg.cycle_open = False
             leg.last_mark_pnl = None
+            leg.cycles = int(leg.cycles or 0) + 1
             banked += 1
             dirty = True
     if dirty:
@@ -588,6 +604,8 @@ def mark_group(db, group, live_map):
             # what is still moving — and let the banked half be corrected.
             'settled': banked,
             'open_pnl': running,
+            'has_settled': has_settled(leg, live),
+            'cycles': int(getattr(leg, 'cycles', 0) or 0),
             'state': state,
             'overridden': getattr(leg, 'settled_override', None) is not None,
             'last_price': live['last_price'] if live else None,

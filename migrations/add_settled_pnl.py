@@ -16,19 +16,23 @@ So a leg now keeps:
 
   settled_pnl       the running total of completed cycles (automatic)
   settled_override  the user's correction of that total, when they made one
+  settled_base      what settled_pnl stood at when that correction was typed, so
+                    later cycles add to it rather than being swallowed by it
   cycle_open        whether a position is currently running against the leg
   last_mark_pnl     the newest live mark, banked as a fallback if Kite drops the
                     row before it is ever seen at quantity 0
+  cycles            how many cycles have closed — 0 means nothing has ever
+                    settled, which is not the same as settling to zero
 
 What this does:
   1. ALTER TABLE ztrade_group_legs ADD COLUMN settled_pnl / settled_override /
      cycle_open / last_mark_pnl (if missing).
   2. Copies each leg's ``frozen_pnl`` into ``settled_pnl`` — the same rupees,
      now in the accumulator, so existing groups keep marking to the same total.
-  3. Sets ``cycle_open`` on legs whose position is still open, so their next
-     close banks a cycle rather than being ignored. A leg with a frozen figure is
-     treated as closed; anything else is assumed open, which is the safe way
-     round — the poller corrects it within one cycle either way.
+  3. Leaves ``cycle_open`` alone: the poller sets it the first time it sees a
+     leg actually open. Guessing it here would invent a completed cycle for legs
+     whose position was already gone, and they would then report a settled ₹0.00
+     for a close that never happened.
 
 ``frozen_pnl`` is left in place, read by nothing, so this is reversible by
 checking out the previous release.
@@ -45,7 +49,8 @@ COLUMNS = [('settled_pnl', 'FLOAT DEFAULT 0.0'),
            ('settled_override', 'FLOAT'),
            ('settled_base', 'FLOAT'),
            ('cycle_open', 'BOOLEAN DEFAULT 0'),
-           ('last_mark_pnl', 'FLOAT')]
+           ('last_mark_pnl', 'FLOAT'),
+           ('cycles', 'INTEGER DEFAULT 0')]
 
 
 def _column_exists(conn, table, col):
@@ -96,19 +101,16 @@ def backfill(conn, dry_run=False):
         print(f"    {symbol}: frozen_pnl {frozen:,.2f} -> settled_pnl")
         if not dry_run:
             conn.execute(
-                f"UPDATE {TABLE} SET settled_pnl = ?, cycle_open = 0 WHERE id = ?",
+                f"UPDATE {TABLE} SET settled_pnl = ?, cycle_open = 0, cycles = 1 "
+                f"WHERE id = ?",
                 (float(frozen), leg_id))
 
-    # A leg with no frozen figure was never seen closed, so treat it as running:
-    # its next close then banks a cycle instead of being skipped.
-    opened = conn.execute(
-        f"SELECT COUNT(*) FROM {TABLE} WHERE frozen_pnl IS NULL").fetchone()[0]
-    if opened:
-        print(f"  {'would mark' if dry_run else 'Marked'} {opened} leg(s) as having "
-              "a cycle in progress.")
-        if not dry_run:
-            conn.execute(
-                f"UPDATE {TABLE} SET cycle_open = 1 WHERE frozen_pnl IS NULL")
+    # cycle_open is deliberately left alone. Marking every unfrozen leg as
+    # "running" would invent a completed cycle for legs whose position was
+    # already gone, and they would then show a settled ₹0.00 — asserting a close
+    # that never happened. The poller (and a page load) sets the flag the first
+    # time it actually sees a leg open, which is the only honest source for it.
+    print("  cycle_open left for the poller to set from the live book.")
     if not dry_run:
         conn.commit()
 

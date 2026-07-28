@@ -332,17 +332,29 @@ def _levels_form(db, group):
             st.rerun()
 
 
+def _state_label(item, open_now):
+    """What the State cell says, including why a settled edit won't take."""
+    if open_now:
+        # A re-opened leg carries banked history that can't be touched while the
+        # new position runs; one that has never closed has nothing to explain.
+        return "open — settled locked" if item['has_settled'] else "open"
+    if item['overridden']:
+        return "closed (edited)"
+    cycles = item['cycles']
+    return f"closed · {cycles} cycle(s)" if cycles > 1 else "closed"
+
+
 def _legs_editor(db, group, mark, live_map, lot_map):
     st.markdown("**Positions in this group** — double-click `Group Qty` to edit it, "
                 "tick `Remove` to drop a leg, then press **Apply changes**.")
     st.caption("Quantities move in whole lots and can't exceed the position, so a "
                "single-lot leg has only one valid value — remove it rather than "
-               "shrink it. **Settled** is what closed cycles already made and is "
-               "kept for good — correct it by hand on a closed leg, or clear the "
-               "cell to go back to the automatic figure. **Open** is the live mark "
-               "of whatever is held right now, so a leg showing an open position "
-               "keeps its settled figure locked. Close a contract and open it "
-               "again and the two simply add up.")
+               "shrink it. **Settled** is what closed cycles already made, kept for "
+               "good — blank until a position has actually closed, and correctable "
+               "by hand on a closed leg (clear the cell to go back to the automatic "
+               "figure). **Open** is the live mark of whatever is held right now. "
+               "Close a contract and open it again and the two simply add up, with "
+               "the settled half locked while the new position runs.")
     if not mark['legs']:
         st.caption("None yet — add open positions below.")
         return
@@ -351,10 +363,10 @@ def _legs_editor(db, group, mark, live_map, lot_map):
     for item in mark['legs']:
         leg = item['leg']
         open_now = item['state'] == G.OPEN
-        # Settled always carries its real figure rather than a blank on an open
-        # leg: an empty cell is awkward to type a correction into, and a
-        # re-opened leg has banked history worth seeing. LTP stays blank when
-        # Kite reports no row — 0.00 would read as a price of zero.
+        # Settled is blank until something has actually settled — a leg that has
+        # never been closed has no settled P&L, and 0.00 would claim it settled at
+        # nothing. Same for LTP with no live row: 0.00 would read as a price of
+        # zero. Blank cells still take a typed correction.
         rows.append({
             'id': leg.id,
             'state': item['state'],
@@ -363,12 +375,11 @@ def _legs_editor(db, group, mark, live_map, lot_map):
             'Avg': item['average_price'] or 0.0,
             'LTP': item['last_price'] if item['last_price'] else float('nan'),
             'Open P&L': item['open_pnl'],
-            'Settled P&L': item['settled'],
+            'Settled P&L': item['settled'] if item['has_settled'] else float('nan'),
             'P&L': item['pnl'],
-            # Says why a settled cell won't take an edit, rather than leaving the
-            # refusal to be discovered on Apply.
-            'State': ('open — settled locked' if open_now
-                      else 'closed' + (' (edited)' if item['overridden'] else '')),
+            # Only mention the lock where there is a settled figure to lock; on a
+            # leg that has never closed there is nothing to say.
+            'State': _state_label(item, open_now),
             'Remove': False,
         })
     # data_editor round-trips a list of dicts as a list of dicts — no DataFrame
@@ -403,9 +414,10 @@ def _legs_editor(db, group, mark, live_map, lot_map):
                      "stops reporting the position. Prefilled with this group's "
                      "pro-rata share of the settled amount — correct it if the "
                      "actual fill differed, or clear the cell to go back to the "
-                     "automatic figure. Editable once the leg is closed; a leg "
-                     "showing an open position ignores an edit here, because that "
-                     "part of its P&L is marked live."),
+                     "automatic figure. Blank means nothing has settled on this "
+                     "leg yet — not that it settled at zero. Editable once the leg "
+                     "is closed; a leg showing an open position ignores an edit "
+                     "here, because that part of its P&L is marked live."),
             'P&L': st.column_config.NumberColumn(
                 "Total P&L", format="%.2f", disabled=True,
                 help="Settled + Open — a contract closed and re-opened carries "
