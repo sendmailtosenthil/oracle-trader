@@ -49,6 +49,43 @@ def get_group(db, group_id):
     return db.query(TradeGroup).filter(TradeGroup.id == group_id).first()
 
 
+# --- Who may see and change a group -----------------------------------------
+# A group has two owners in different senses: `user_id` is the Kite login whose
+# positions it holds, and `owner` is the app user who created it. Editing
+# follows `owner`; viewing additionally allows anything flagged `shared`.
+#
+# These are UI rules only. The poller evaluates and alerts on every deployed
+# group regardless — it runs with no signed-in user, and a stoploss must fire
+# whoever happens to be looking.
+
+def owner_of(group):
+    return (getattr(group, "owner", "") or "").strip()
+
+
+def is_shared(group):
+    return bool(getattr(group, "shared", False))
+
+
+def can_edit_group(group):
+    """Only the creator (or an administrator) may change a group."""
+    from common import permissions as P
+    return P.owns(owner_of(group))
+
+
+def can_view_group(group):
+    """Creator, administrator, or anyone at all once the group is shared."""
+    return can_edit_group(group) or is_shared(group)
+
+
+def visible_groups(db, user_id=None):
+    """Groups the signed-in user may see: their own, plus shared ones."""
+    return [g for g in list_groups(db, user_id) if can_view_group(g)]
+
+
+def editable_groups(db, user_id=None):
+    return [g for g in list_groups(db, user_id) if can_edit_group(g)]
+
+
 def legs_of(db, group_id):
     return (
         db.query(TradeGroupLeg)
@@ -58,12 +95,17 @@ def legs_of(db, group_id):
     )
 
 
-def create_group(db, name, user_id, stoploss=None, target=None, channels=None):
-    """Create a draft group owned by ``user_id``. Returns ``(group, error)``.
+def create_group(db, name, user_id, stoploss=None, target=None, channels=None,
+                 owner=None, shared=False):
+    """Create a draft group on Zerodha account ``user_id``. Returns ``(group, error)``.
 
     ``channels`` is the notification channels to use (see
     :mod:`zerodha_trades.services.alerts`); ``None`` means all of them. An
     empty list is how a group is created silent.
+
+    ``owner`` is the *app* user creating it — distinct from ``user_id``, which
+    is the Kite login the positions belong to. ``shared`` opens the group up for
+    other users to view; it never lets them edit.
     """
     name = (name or '').strip()
     if not name:
@@ -80,7 +122,8 @@ def create_group(db, name, user_id, stoploss=None, target=None, channels=None):
     if err:
         return None, err
     group = TradeGroup(name=name, user_id=user_id, stoploss=stoploss,
-                       target=target, status=DRAFT)
+                       target=target, status=DRAFT, owner=owner,
+                       shared=bool(shared))
     apply_channels(group, ALL_CHANNELS if channels is None else channels)
     db.add(group)
     db.commit()
@@ -126,11 +169,12 @@ def levels_imbalance(stoploss, target, tolerance=LEVEL_BALANCE_TOLERANCE):
             "Check for a mistyped zero.")
 
 
-def update_group(db, group, name=None, stoploss=..., target=..., channels=None):
+def update_group(db, group, name=None, stoploss=..., target=..., channels=None,
+                 shared=None):
     """Patch a group's editable fields. Returns ``(group, error)``.
 
     ``stoploss`` / ``target`` use an ``...`` sentinel so ``None`` can be passed
-    explicitly to disarm that side.
+    explicitly to disarm that side. ``shared`` is left alone when ``None``.
     """
     new_sl = group.stoploss if stoploss is ... else stoploss
     new_tg = group.target if target is ... else target
@@ -155,6 +199,8 @@ def update_group(db, group, name=None, stoploss=..., target=..., channels=None):
     group.target = new_tg
     if channels is not None:
         apply_channels(group, channels)
+    if shared is not None:
+        group.shared = bool(shared)
     db.commit()
     return group, None
 

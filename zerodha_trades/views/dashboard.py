@@ -42,7 +42,9 @@ def _maybe_dialog(db):
     if group_id is None:
         return
     group = G.get_group(db, group_id)
-    if group is None:                      # deleted from another tab
+    # Gone (deleted in another tab), or never this user's to open — the id lives
+    # in session state, so the visibility rule is re-checked here, not trusted.
+    if group is None or not G.can_view_group(group):
         st.session_state.pop(OPEN_DIALOG, None)
         return
     live_map = P.snapshot_maps(db).get(group.user_id, {})
@@ -96,9 +98,17 @@ def _poller_bar(db):
 @st.fragment(run_every=10)
 def _cards(db):
     """The card grid, rerunning on its own every 10s off the stored snapshot."""
-    all_groups = G.list_groups(db)
+    # Your groups, plus any another user chose to share. Administrators see the
+    # lot. A group nobody shared with you is not merely hidden from the grid —
+    # its P&L never reaches this page.
+    all_groups = G.visible_groups(db)
     if not all_groups:
-        st.info("No groups yet — create one under **Group Management**.")
+        if G.list_groups(db):
+            st.info("No groups are visible to you. Groups belong to whoever "
+                    "created them; ask them to tick **Share with other users** "
+                    "on one, or add your own Zerodha account and build your own.")
+        else:
+            st.info("No groups yet — create one under **Group Management**.")
         return
 
     # Every account's cards on one page; each group marks against its own book.
@@ -106,8 +116,10 @@ def _cards(db):
 
     total = sum(m['pnl'] for m in marks)
     accounts = {m['group'].user_id for m in marks}
+    n_shared = sum(1 for m in marks if not G.can_edit_group(m['group']))
+    shared_note = f" · {n_shared} shared with you" if n_shared else ""
     st.markdown(f"**{len(marks)} group(s)** across **{len(accounts)} account(s)** · "
-                f"combined P&L {H.colored_money(total)}")
+                f"combined P&L {H.colored_money(total)}{shared_note}")
 
     for start in range(0, len(marks), CARDS_PER_ROW):
         row = marks[start:start + CARDS_PER_ROW]
@@ -120,8 +132,14 @@ def _cards(db):
 def _card(mark):
     group, pnl = mark['group'], mark['pnl']
     with st.container(border=True):
+        if not G.can_edit_group(group):
+            badge = f"  👁️ *shared by {G.owner_of(group) or 'another user'}*"
+        elif G.is_shared(group):
+            badge = "  🔗 *shared*"
+        else:
+            badge = ""
         st.markdown(f"**{group.name}**  `{group.user_id}`  "
-                    f"{H.STATUS_BADGE.get(group.status, group.status)}")
+                    f"{H.STATUS_BADGE.get(group.status, group.status)}{badge}")
         st.markdown(f"### {H.colored_money(pnl)}")
         st.caption(f"{mark['n_legs']} instrument(s) · {mark['open_legs']} open")
 

@@ -30,6 +30,7 @@ from momentum.views import ledger as momentum_ledger
 from zerodha_trades.views import manage as ztrade_manage
 from zerodha_trades.views import dashboard as ztrade_dashboard
 from admin import users as admin_users
+from admin import zerodha_accounts as admin_zerodha
 
 st.set_page_config(page_title="Project Oracle", layout="wide")
 inject_global_css()
@@ -107,6 +108,10 @@ def _broker_setup():
     broker_setup.render(db)
 
 
+def _zerodha_accounts():
+    admin_zerodha.render(db)
+
+
 def _user_management():
     admin_users.render(db)
 
@@ -121,6 +126,7 @@ RENDERERS = {
     "momentum.ledger": _momentum_ledger,
     "ztrade.dashboard": _ztrade_dashboard,
     "ztrade.manage": _ztrade_manage,
+    "setup.zerodha": _zerodha_accounts,
     "setup.broker": _broker_setup,
     "setup.users": _user_management,
 }

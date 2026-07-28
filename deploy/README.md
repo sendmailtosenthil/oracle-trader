@@ -23,6 +23,40 @@ Management** (administrators only). Each user gets a level per page — no
 access, read only, or edit — so a viewer can be given, say, the Bees dashboard
 without the ledger.
 
+## Zerodha accounts
+Kite logins live in the database too, on **Setup › Zerodha Accounts**, with the
+password and TOTP secret that let the 8:10am job refresh the enctoken by itself.
+
+An account belongs to the user who added it. Everyone who can open the Setup
+pages sees that it exists — its Kite id, owner, and whether its token is live —
+but only the owner (and administrators) can see or change its password, TOTP
+secret and enctoken, or remove it. Zerodha Trades follows the same line: your
+account tabs are the accounts you added, and a trade group is editable only by
+whoever created it. A group can be shared for others to *view* with a per-group
+toggle, off by default.
+
+The two secrets are encrypted at rest with a key held **outside** the database,
+because the nightly backup uploads the database to Google Drive. The key is
+`ORACLE_SECRET_KEY` if set, otherwise `data/secret.key`, generated 0600 on first
+use and excluded from both git and the backup:
+```bash
+cp data/secret.key /somewhere/safe/          # do this once
+```
+Lose it and the stored credentials can only be re-entered (nothing else is
+affected). Restoring a backup onto a host with a different key shows a
+"can't be decrypted" warning on the account, with a field to re-enter them.
+
+Migrating credentials out of `.env` (see what it would do first):
+```bash
+venv/bin/python -m migrations.move_zerodha_credentials --dry-run
+venv/bin/python -m migrations.move_zerodha_credentials
+```
+It adds the ownership columns, hands existing accounts and groups to the first
+administrator, and moves `ZERODHA_PASSWORD` / `ZERODHA_TOTP_SECRET` into the
+database encrypted. Delete those two lines from `.env` afterwards — the script
+reminds you. Use `--owner USER` to assign to somebody other than the first
+administrator.
+
 Upgrading a database that predates per-page permissions? The app applies the
 schema change itself on startup, so a normal `git pull` + restart is enough.
 To do it ahead of time (and see exactly what changed):

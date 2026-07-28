@@ -9,6 +9,9 @@ requests
 google-api-python-client
 google-auth
 google-auth-oauthlib
+# Encrypts the stored Kite password + TOTP secret (common/secrets.py). The whole
+# DB is backed up to Google Drive nightly, so those must not sit in it readable.
+cryptography
 # Headless Zerodha login for the daily enctoken refresh (bees.bot relogin).
 # Needs a browser too: python -m playwright install chromium  (see deploy/setup.sh)
 playwright

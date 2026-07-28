@@ -88,15 +88,22 @@ def clear_positions_cache():
     _fetch_all_cached.clear()
 
 
-def live_positions_by_account(db):
-    """``({user_id: {...}}, fetched_at)`` for every configured account.
+def live_positions_by_account(db, only=None):
+    """``({user_id: {...}}, fetched_at)`` for the configured accounts.
 
     Each entry is ``{'positions': [...], 'error': str|None}``. Accounts are
     fetched concurrently and one bad token only marks its own entry, so a stale
     login never blanks the other books. Snapshots are persisted per account so
     the dashboard has something to draw before the poller's next cycle.
+
+    ``only`` restricts the fetch to a set of user ids. Pass the accounts the
+    signed-in user actually manages: a page has no business spending a broker
+    round-trip on somebody else's login, and the results are then filtered
+    anyway.
     """
     creds = positions.credentials(db)
+    if only is not None:
+        creds = [c for c in creds if c[0] in only]
     if not creds:
         return {}, None
     try:

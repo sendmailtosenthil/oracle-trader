@@ -80,11 +80,25 @@ class AuthSession(Base):
 
 
 class BrokerConfig(Base):
+    """One Zerodha login. See :mod:`common.broker` for the multi-account layout.
+
+    ``owner`` is the app username that added the account: only that user (and
+    administrators) may see or change its password / TOTP secret, though anyone
+    with access to the Setup pages can see that the account exists.
+
+    ``password_enc`` and ``totp_enc`` hold ciphertext from
+    :mod:`common.secrets` — never the raw values. The nightly backup ships this
+    whole database to Google Drive, so the key lives outside it.
+    """
     __tablename__ = 'broker_config'
     id = Column(Integer, primary_key=True)
     broker_name = Column(String, unique=True, default='ZERODHA')
     user_id = Column(String, nullable=False, default='PC8006')
     enctoken = Column(String, nullable=False)
+    owner = Column(String, nullable=True)          # users.username, NULL = unclaimed
+    password_enc = Column(String, nullable=True)   # Kite login password (ciphertext)
+    totp_enc = Column(String, nullable=True)       # base32 TOTP secret (ciphertext)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class MomentumDelivery(Base):
     # Daily NSE delivery % per stock (from the one-per-day security bhavcopy).
@@ -220,6 +234,11 @@ class TradeGroup(Base):
     alert_enabled = Column(Boolean, default=True)
     notify_email = Column(Boolean, default=True)
     notify_telegram = Column(Boolean, default=True)
+    # The app user who created the group. Only they (and administrators) can
+    # see or change it — unless `shared` is set, which opens it up for viewing
+    # by anyone with dashboard access. Sharing never grants editing.
+    owner = Column(String, nullable=True)           # users.username, NULL = unclaimed
+    shared = Column(Boolean, default=False)
     status = Column(String, default='draft')        # 'draft' | 'deployed' | 'triggered'
     trigger_type = Column(String, nullable=True)    # 'TARGET' | 'STOPLOSS'
     trigger_message = Column(String, nullable=True)
@@ -345,9 +364,17 @@ def _ensure_columns():
         'momentum_holdings': [('best_rank', 'INTEGER')],
         'ztrade_settings': [('test_mode', 'BOOLEAN DEFAULT 0')],
         # Pre-multi-account groups all belonged to the master login.
+        # owner/shared arrive NULL and 0: an unowned group is claimable by the
+        # migration, and nothing is shared until somebody says so.
         'ztrade_groups': [("user_id", "VARCHAR DEFAULT 'PC8006'"),
                           ('notify_email', 'BOOLEAN DEFAULT 1'),
-                          ('notify_telegram', 'BOOLEAN DEFAULT 1')],
+                          ('notify_telegram', 'BOOLEAN DEFAULT 1'),
+                          ('owner', 'VARCHAR'),
+                          ('shared', 'BOOLEAN DEFAULT 0')],
+        'broker_config': [('owner', 'VARCHAR'),
+                          ('password_enc', 'VARCHAR'),
+                          ('totp_enc', 'VARCHAR'),
+                          ('created_at', 'DATETIME')],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

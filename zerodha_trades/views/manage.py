@@ -11,6 +11,7 @@ squared off stays in its group with its P&L frozen.
 """
 import streamlit as st
 
+from common import broker as B
 from common import permissions as ACL   # `P` is taken by positions in this module
 from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
@@ -54,9 +55,24 @@ def render(db):
     H.inject_css()
     H.render_flash()
 
-    books, fetched_at = H.live_positions_by_account(db)
+    # You manage the books of the Zerodha logins you added. Someone else's
+    # account is not shown here at all: its positions are their business, and a
+    # group can only be built out of positions you can see. Scoping the fetch
+    # itself means no broker round-trip is spent on an account you can't see.
+    mine = set(B.my_user_ids(db))
+    if not B.list_accounts(db):
+        st.error("No Zerodha accounts configured — add one in **Setup › Zerodha "
+                 "Accounts**.")
+        return
+
+    books, fetched_at = H.live_positions_by_account(db, only=mine)
     if not books:
-        st.error("No Zerodha accounts configured — add one in **Broker Setup**.")
+        st.info(
+            "None of the configured Zerodha accounts were added by you, so there "
+            "are no books to manage here. Add your own on **Setup › Zerodha "
+            "Accounts**, or ask an administrator to share a group with you — "
+            "shared groups appear on the **Dashboard**."
+        )
         return
 
     head, refresh = st.columns([5, 1])
@@ -69,7 +85,7 @@ def render(db):
 
     # One lookup for every symbol on the page: the instruments master is global,
     # so accounts share it rather than each paying for its own fetch.
-    all_groups = G.list_groups(db)
+    all_groups = [g for g in G.list_groups(db) if g.user_id in books]
     lot_map = H.lot_sizes(db, [
         p['tradingsymbol'] for res in books.values() for p in res['positions']
     ] + [leg.tradingsymbol for g in all_groups for leg in G.legs_of(db, g.id)])
@@ -114,7 +130,9 @@ def _account_tab(db, user_id, book, lot_map):
     _create_form(db, user_id)
     st.divider()
 
-    groups = G.list_groups(db, user_id)
+    # The account is yours, so every group on it is editable here — bar one an
+    # administrator built on it, which stays theirs.
+    groups = [g for g in G.list_groups(db, user_id) if G.can_edit_group(g)]
     if not groups:
         st.info(f"No groups for **{user_id}** yet — create one above, then tag its "
                 "open positions into it.")
@@ -231,9 +249,17 @@ def _create_form(db, user_id):
                 key=f"ztrade_newch_{user_id}",
                 placeholder="No alerts")
 
+            shared = st.checkbox(
+                "Share with other users (view only)", value=False,
+                key=f"ztrade_newshare_{user_id}",
+                help="Off by default. When on, anyone who can open the Zerodha "
+                     "Trades dashboard sees this group's P&L. Only you can edit "
+                     "it either way.")
+
             if st.form_submit_button("Create group", type="primary"):
                 group, err = G.create_group(db, name, user_id, stoploss, target,
-                                            _channels(channels))
+                                            _channels(channels),
+                                            owner=ACL.current_user(), shared=shared)
                 if err:
                     H.flash('error', err)
                 else:
@@ -283,9 +309,15 @@ def _levels_form(db, group):
             default=[CHANNEL_LABELS[i] for i, c in enumerate(G.ALL_CHANNELS)
                      if c in G.channels_of(group)],
             key=f"ch_{group.id}", placeholder="No alerts")
+        shared = st.checkbox(
+            "Share with other users (view only)", value=G.is_shared(group),
+            key=f"sh_{group.id}",
+            help="When on, anyone who can open the Zerodha Trades dashboard sees "
+                 "this group's P&L. Editing stays with you.")
         if st.form_submit_button("Save settings"):
             _, err = G.update_group(db, group, name=name, stoploss=stoploss,
-                                    target=target, channels=_channels(channels))
+                                    target=target, channels=_channels(channels),
+                                    shared=shared)
             if err:
                 H.flash('error', err)
             else:

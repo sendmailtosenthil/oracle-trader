@@ -75,8 +75,11 @@ PAGES = [
     Page("ztrade.manage", "📦 Zerodha Trades", "Group Management", "🗂️", "ztrade-groups",
          readable=False, help="Creates groups, sets stoploss/target and tags positions."),
 
+    Page("setup.zerodha", "⚙️ Setup", "Zerodha Accounts", "📇", "zerodha-accounts",
+         help="Read lists the accounts; edit adds them. A login's password and "
+              "TOTP secret are only ever shown to whoever added it."),
     Page("setup.broker", "⚙️ Setup", "Broker Setup", "🔑", "broker-setup",
-         readable=False, help="Holds the Zerodha enctokens — grant sparingly."),
+         readable=False, help="Enctokens for accounts you added — grant sparingly."),
     Page("setup.users", "⚙️ Setup", "User Management", "👥", "users",
          readable=False, admin_only=True, help="Administrators only."),
 ]
@@ -168,10 +171,16 @@ def _state():
 
 
 def activate(user):
-    """Publish a user's effective permissions for the rest of this run."""
+    """Publish a user's identity and effective permissions for the rest of this run.
+
+    The username is set here too, not just by the login: ownership checks compare
+    against it, so it must never drift from the permissions it was resolved with.
+    """
     state = _state()
     state[_STATE_PERMS] = for_user(user)
     state[_STATE_ADMIN] = bool(user is not None and user.is_admin)
+    if user is not None:
+        state["username"] = user.username
 
 
 def clear():
@@ -182,6 +191,30 @@ def clear():
 
 def is_admin():
     return bool(_state().get(_STATE_ADMIN))
+
+
+def current_user():
+    """Username of whoever is signed in, or ``""`` outside a login."""
+    return _state().get("username", "") or ""
+
+
+def owns(owner):
+    """True when the signed-in user owns a record — administrators own everything.
+
+    An **unclaimed** record (``owner`` empty, i.e. created before ownership
+    existed or by a job) belongs to nobody, so only administrators may touch it.
+    That is the safe direction: the migration assigns them to an administrator,
+    and until then they are not silently up for grabs.
+    """
+    if is_admin():
+        return True
+    mine, theirs = owner_name(current_user()), owner_name(owner)
+    return bool(theirs) and theirs == mine
+
+
+def owner_name(owner):
+    """Normalise a stored owner value for comparison."""
+    return (owner or "").strip().lower()
 
 
 def level(key):

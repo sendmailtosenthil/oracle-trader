@@ -9,11 +9,19 @@ TOTP 2FA challenge — and reads the ``enctoken`` cookie Kite sets on success.
 It is pure browser automation: no Kite private API is called directly, so it
 keeps working as long as the visible login flow does.
 
-Credentials come from the environment (same ``.env`` the rest of the app uses):
+Credentials live in the database, on the Zerodha account they belong to, set on
+**Setup › Zerodha Accounts** and encrypted at rest (:mod:`common.secrets`). The
+account defaults to the master login every automated job runs on.
+
+The old environment variables still work as a fallback, so a host that hasn't
+been migrated yet keeps refreshing its token:
 
     ZERODHA_USER_ID      Kite user id (e.g. PC8006)   [also used elsewhere]
     ZERODHA_PASSWORD     Kite login password
     ZERODHA_TOTP_SECRET  base32 TOTP secret (the "enable external 2FA app" key)
+
+Once the credentials are in the database, delete them from ``.env`` — see
+``migrations/move_zerodha_credentials.py``.
 
 Playwright + a Chromium build must be installed on the host:
 
@@ -56,22 +64,54 @@ def _totp(secret, digits=6, period=30, at=None):
     return str(binary % (10 ** digits)).zfill(digits)
 
 
-def _read_credentials():
-    user_id = (os.environ.get("ZERODHA_USER_ID") or "").strip()
-    password = (os.environ.get("ZERODHA_PASSWORD") or "").strip()
-    secret = (os.environ.get("ZERODHA_TOTP_SECRET") or "").strip()
-    missing = [
-        name
-        for name, val in (
-            ("ZERODHA_USER_ID", user_id),
-            ("ZERODHA_PASSWORD", password),
-            ("ZERODHA_TOTP_SECRET", secret),
-        )
-        if not val
-    ]
+def _read_credentials(user_id=None):
+    """``(user_id, password, totp_secret)`` for the account to log in as.
+
+    The database wins; the ``ZERODHA_*`` environment variables fill any gap so
+    an un-migrated host keeps working. Raises :class:`ZerodhaLoginError` naming
+    what is missing and where to set it.
+    """
+    env_user = (os.environ.get("ZERODHA_USER_ID") or "").strip()
+    password = secret = ""
+
+    uid = (user_id or "").strip() or env_user
+    try:
+        from common.broker import MASTER_USER_ID, get_credentials, normalise_user_id
+        from common.database import get_db
+
+        uid = normalise_user_id(uid) or MASTER_USER_ID
+        db = next(get_db())
+        try:
+            stored_pw, stored_totp = get_credentials(db, uid)
+        finally:
+            db.close()
+        # None means "stored but this host can't decrypt it" — a rotated or
+        # missing key. Say so rather than silently trying the environment and
+        # reporting a confusing "missing credentials".
+        if stored_pw is None or stored_totp is None:
+            raise ZerodhaLoginError(
+                f"{uid}'s stored credentials cannot be decrypted — the encryption "
+                "key (data/secret.key or ORACLE_SECRET_KEY) is missing or changed. "
+                "Re-enter them on Setup > Zerodha Accounts."
+            )
+        password, secret = stored_pw or "", stored_totp or ""
+    except ZerodhaLoginError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - no DB yet, or an old schema
+        log.warning("could not read stored credentials (%s); falling back to env", exc)
+
+    uid = uid or env_user
+    password = password or (os.environ.get("ZERODHA_PASSWORD") or "").strip()
+    secret = secret or (os.environ.get("ZERODHA_TOTP_SECRET") or "").strip()
+
+    missing = [name for name, val in (("user id", uid), ("password", password),
+                                      ("TOTP secret", secret)) if not val]
     if missing:
-        raise ZerodhaLoginError(f"missing credentials in environment: {', '.join(missing)}")
-    return user_id, password, secret
+        raise ZerodhaLoginError(
+            f"missing {', '.join(missing)} for the automatic login — set them on "
+            "Setup > Zerodha Accounts"
+        )
+    return uid, password, secret
 
 
 def _enctoken_from_cookies(context):
@@ -84,16 +124,18 @@ def _enctoken_from_cookies(context):
 def fetch_enctoken(user_id=None, password=None, totp_secret=None, headless=True, timeout=45):
     """Log in to Kite headlessly and return a fresh ``enctoken`` string.
 
-    Credentials default to the ``ZERODHA_*`` environment variables. ``timeout``
-    bounds each individual wait (seconds). Raises :class:`ZerodhaLoginError` on
-    any failure (missing creds, Playwright not installed, form not found,
-    wrong password / TOTP, or no enctoken after 2FA).
+    Credentials default to those stored against ``user_id`` in the database
+    (the master account when it isn't given), falling back to the ``ZERODHA_*``
+    environment variables. ``timeout`` bounds each individual wait (seconds).
+    Raises :class:`ZerodhaLoginError` on any failure (missing creds, Playwright
+    not installed, form not found, wrong password / TOTP, or no enctoken after
+    2FA).
     """
     if user_id is None or password is None or totp_secret is None:
-        env_user, env_pass, env_secret = _read_credentials()
-        user_id = user_id or env_user
-        password = password or env_pass
-        totp_secret = totp_secret or env_secret
+        found_user, found_pass, found_secret = _read_credentials(user_id)
+        user_id = user_id or found_user
+        password = password or found_pass
+        totp_secret = totp_secret or found_secret
 
     try:
         from playwright.sync_api import sync_playwright

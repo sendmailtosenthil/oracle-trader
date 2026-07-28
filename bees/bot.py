@@ -47,11 +47,12 @@ def ensure_enctoken():
         print(f"Enctoken refresh skipped: {reason}.")
         return
 
-    # The account we log into is whatever ZERODHA_USER_ID names (fetch_enctoken
-    # uses the same env), so the fresh token must be stored against that user_id.
+    # We log into the master account: its stored password + TOTP secret are what
+    # fetch_enctoken uses, and the fresh token goes back on the same row. The
+    # ZERODHA_USER_ID override is still honoured for an un-migrated host.
     db = next(get_db())
     cfg = db.query(BrokerConfig).filter(BrokerConfig.broker_name == "ZERODHA").first()
-    user_id = (os.environ.get("ZERODHA_USER_ID") or "").strip() or (cfg.user_id if cfg else "") or "PC8006"
+    user_id = (cfg.user_id if cfg else "") or (os.environ.get("ZERODHA_USER_ID") or "").strip() or "PC8006"
     if cfg and cfg.enctoken and is_zerodha_token_valid(cfg.enctoken, cfg.user_id or user_id):
         print("Enctoken refresh skipped: existing token is still valid.")
         db.close()
