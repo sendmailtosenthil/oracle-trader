@@ -7,7 +7,10 @@ average price* and pro-rated to the quantity the group owns:
 
 so a group holding a whole position reports exactly the P&L Kite shows, and a
 group holding half of it reports half. Once the broker squares the position off
-(``quantity == 0``) the leg's share of the realised P&L is frozen instead.
+the leg's share of the settled amount is banked, and stays banked after Kite
+stops reporting the row — so a leg's P&L is really two numbers that add up, its
+banked history plus the live mark of whatever it holds now. Close a contract and
+open the same one again and both count.
 
 Triggers are absolute rupee levels on that P&L: ``target`` is the upper bound
 and ``stoploss`` the lower one. Both may be positive or negative, so a positive
@@ -430,11 +433,22 @@ def open_pnl(leg, live):
     return leg.quantity * (live['last_price'] - live['average_price'])
 
 
+OPEN = 'open'
+CLOSED = 'closed'
+
+
 def leg_state(live):
-    """``open`` (position held) / ``closed`` (squared off) / ``missing`` (row gone)."""
-    if live is None:
-        return 'missing'
-    return 'open' if live['quantity'] else 'closed'
+    """``open`` when a position is held, ``closed`` otherwise.
+
+    A leg is closed whether Kite still reports the squared-off row or has dropped
+    it from the book entirely — from the group's point of view those are the same
+    thing: nothing is running, and the settled figure is the leg's P&L. There is
+    deliberately no third state, so anything a user can see and act on is one of
+    two words.
+    """
+    if live is None or not live['quantity']:
+        return CLOSED
+    return OPEN
 
 
 def leg_settled(leg, live):
@@ -484,9 +498,9 @@ def set_settled_pnl(db, leg, value, state):
     later cycles add to it instead of being swallowed. Clearing it restores the
     automatic figure.
     """
-    if state == 'open':
-        return (f"{leg.tradingsymbol} is still open — its P&L is marked live and "
-                f"cannot be set by hand. Close the position first.")
+    if state == OPEN:
+        return (f"{leg.tradingsymbol} still holds an open position — that part of its "
+                f"P&L is marked live and cannot be set by hand. Close it first.")
     if value is None:
         leg.settled_override = None
         leg.settled_base = None
