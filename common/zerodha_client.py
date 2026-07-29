@@ -10,14 +10,33 @@ No Streamlit / no DB dependencies here on purpose: pure, reusable logic.
 """
 import codecs
 import csv
+import datetime
 import time
 
 import requests
+
+from common.timez import now_ist
 
 # --- Well-known index instrument tokens (stable on Kite) ---
 NIFTY_INDEX_TOKEN = 256265      # "NIFTY 50"
 BANKNIFTY_INDEX_TOKEN = 260105  # "NIFTY BANK"
 INDIA_VIX_TOKEN = 264969        # "INDIA VIX"
+
+# Spot token for each index that carries derivatives, keyed by the *derivative*
+# root — the `name` column on an NFO/BFO row. Kite lists the index itself under
+# a different tradingsymbol ("NIFTY" options track "NIFTY 50"), so a lookup
+# table is unavoidable; these are read straight off the instruments master and
+# Kite keeps them stable. Anything not listed is a stock, whose derivative root
+# is its own equity symbol and which is resolved from the master instead.
+INDEX_SPOT_TOKENS = {
+    "NIFTY": 256265,          # NIFTY 50
+    "BANKNIFTY": 260105,      # NIFTY BANK
+    "FINNIFTY": 257801,       # NIFTY FIN SERVICE
+    "MIDCPNIFTY": 288009,     # NIFTY MIDCAP SELECT
+    "NIFTYNXT50": 270857,     # NIFTY NEXT 50
+    "SENSEX": 265,
+    "BANKEX": 274441,
+}
 
 _KITE_HOST = "https://kite.zerodha.com"
 _INSTRUMENTS_URL = "https://api.kite.trade/instruments"
@@ -135,19 +154,23 @@ class ZerodhaClient:
         payload = self._get("/oms/portfolio/positions")
         return (payload.get("data") or {}).get("net") or []
 
-    def contract_map(self, tradingsymbols, timeout=60):
+    def contract_map(self, tradingsymbols, exchange=None, timeout=60):
         """Return ``{tradingsymbol: {...}}`` contract detail for the given symbols.
 
-        Each value carries what a derivative needs to be priced — ``name`` (the
-        underlying), ``expiry``, ``strike``, ``instrument_type`` (CE/PE/FUT/EQ),
-        ``lot_size``, ``segment`` and ``exchange``. Equity rows report a lot size
-        of 1; derivatives carry the real contract size (NIFTY 65, BANKNIFTY 35, …).
+        Each value carries what a derivative needs to be priced —
+        ``instrument_token``, ``name`` (the underlying), ``expiry``, ``strike``,
+        ``instrument_type`` (CE/PE/FUT/EQ), ``lot_size``, ``segment`` and
+        ``exchange``. Equity rows report a lot size of 1; derivatives carry the
+        real contract size (NIFTY 65, BANKNIFTY 35, …).
+
+        ``exchange`` narrows the match, which matters for equities: a symbol
+        like ``INFY`` is listed on both NSE and BSE, and without it whichever
+        row the master happens to print first wins.
 
         Streams the instruments dump and keeps only the handful of rows that
         match, so the ~100k-row master is never materialised — same low-memory
         approach as :meth:`nse_eq_token_map` — and stops reading the moment
-        every wanted symbol is found. The first row wins for a symbol listed on
-        more than one exchange, which is what makes the early exit safe.
+        every wanted symbol is found.
         """
         wanted = set(tradingsymbols or ())
         if not wanted:
@@ -163,11 +186,14 @@ class ZerodhaClient:
         for row in reader:
             if len(row) < 12 or row[2] not in wanted or row[2] in out:
                 continue
+            if exchange and row[11] != exchange:
+                continue
             try:
                 lot_size = int(row[8])
             except ValueError:
                 continue
             out[row[2]] = {
+                "instrument_token": int(row[0]),
                 "tradingsymbol": row[2],
                 "name": row[3],
                 "expiry": row[5] or "",
@@ -180,6 +206,42 @@ class ZerodhaClient:
             if len(out) == len(wanted):
                 break  # found them all — stop reading the stream
         return out
+
+    def spot_token(self, name, exchange="NSE", timeout=60):
+        """Instrument token of the underlying a derivative root tracks.
+
+        Indices come from :data:`INDEX_SPOT_TOKENS` at no cost; a stock's
+        derivative root is its own equity symbol, so that one row is looked up
+        in the master.
+        """
+        if name in INDEX_SPOT_TOKENS:
+            return INDEX_SPOT_TOKENS[name]
+        row = self.contract_map([name], exchange=exchange, timeout=timeout).get(name)
+        return row["instrument_token"] if row else None
+
+    def last_traded_price(self, instrument_token, lookback_minutes=30, now=None):
+        """Latest traded price for an instrument, or ``None``.
+
+        Kite's ``/oms/quote`` endpoints require a Kite Connect subscription and
+        reject an enctoken session, so the most recent *candle* stands in: during
+        market hours the last minute bar is at most a minute behind, and after
+        the close it is the session's final print. Falls back to daily bars when
+        the minute window comes back empty — a weekend, a holiday, or before the
+        day's first trade.
+
+        The lookback is deliberately short. Only the newest bar is used, so
+        asking for more would spend bandwidth and memory on rows that get
+        discarded.
+        """
+        if not instrument_token:
+            return None
+        now = now or now_ist().replace(tzinfo=None)   # Kite reads these as IST
+        candles = self.get_historical(
+            instrument_token, "minute", now - datetime.timedelta(minutes=lookback_minutes), now)
+        if not candles:
+            candles = self.get_historical(
+                instrument_token, "day", now - datetime.timedelta(days=10), now)
+        return _safe_float(candles[-1]["close"]) if candles else None
 
     # ----- instruments -------------------------------------------------
     def nse_eq_token_map(self, timeout=60):
@@ -331,7 +393,6 @@ def _parse_expiry(value):
     """Parse a Kite expiry string (``YYYY-MM-DD``) to a date, or None."""
     if not value:
         return None
-    import datetime
     try:
         return datetime.datetime.strptime(value[:10], "%Y-%m-%d").date()
     except ValueError:

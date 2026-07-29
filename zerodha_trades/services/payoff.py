@@ -270,7 +270,7 @@ def build(items, contracts, spot=None, underlying=None, now=None, points=161,
 
     front = min((leg['expiry'] for leg in priced if leg['expiry']), default=None)
     t_front = years_to(front, now)
-    sigma = sd_move(priced, spot, front, t_front) if spot else None
+    sigma, atm_iv = sd_move(priced, spot, front, t_front) if spot else (None, None)
     centre = spot or strike_centre(priced)
     if half_width is None:
         half_width = default_width(centre, priced, sigma)
@@ -294,6 +294,7 @@ def build(items, contracts, spot=None, underlying=None, now=None, points=161,
         'unresolved': unresolved,
         'front_expiry': front,
         'sigma': sigma,
+        'atm_iv': atm_iv,
         'half_width': half_width,
         'breakevens': breakevens(prices, expiry_pnl),
         # Several expiries means the "at expiry" curve settles the front month
@@ -330,21 +331,25 @@ def _priced_leg(item, contract, kind, expiry, spot, now):
 
 
 def sd_move(priced, spot, front, t_front):
-    """One standard deviation of underlying travel by the front expiry.
+    """``(sigma, iv)`` — one SD of underlying travel by the front expiry.
 
     Uses the implied vol of the held option nearest the money — the contract
     whose quote the market prices most confidently — rather than a volatility
-    index, so the bands describe *this* position's expiry. ``None`` when the
-    group holds no option with a usable quote.
+    index, so the bands describe *this* position's expiry. ``(None, None)`` when
+    the group holds no option with a usable quote.
+
+    The vol is returned alongside because it is the half of this worth
+    *storing*: a group freezes it at deploy so later drift can be read as a vol
+    move rather than as the time decay that dominates sigma.
     """
     if t_front <= 0:
-        return None
+        return None, None
     options = [leg for leg in priced if leg['kind'] in OPTION_KINDS and leg['iv']]
     if not options:
-        return None
+        return None, None
     front_month = [leg for leg in options if leg['expiry'] == front] or options
     nearest = min(front_month, key=lambda leg: abs(leg['strike'] - spot))
-    return spot * nearest['iv'] * math.sqrt(t_front)
+    return spot * nearest['iv'] * math.sqrt(t_front), nearest['iv']
 
 
 def strike_centre(priced):

@@ -17,6 +17,7 @@ import math
 import plotly.graph_objects as go
 import streamlit as st
 
+from zerodha_trades.services import groups as G
 from zerodha_trades.services import payoff as PO
 from zerodha_trades.views import _helpers as H
 
@@ -29,12 +30,16 @@ LIGHT = {
     'text': '#52514e', 'muted': '#898781',
     'grid': '#e1e0d9', 'axis': '#c3c2b7',
     'band': 'rgba(137,135,129,0.10)', 'band_outer': 'rgba(137,135,129,0.05)',
+    # The two SD sets are told apart by weight, not hue: today's is the darker
+    # grey, the deploy-time reference the lighter one.
+    'sd_now': '#898781', 'sd_ref': '#bcbbb2',
 }
 DARK = {
     'expiry': '#3987e5', 'now': '#d95926',
     'text': '#c3c2b7', 'muted': '#898781',
     'grid': '#2c2c2a', 'axis': '#383835',
     'band': 'rgba(195,194,183,0.09)', 'band_outer': 'rgba(195,194,183,0.045)',
+    'sd_now': '#8d8b85', 'sd_ref': '#454440',
 }
 GOOD, CRITICAL = '#0ca30c', '#d03b3b'   # status inks — target and stoploss
 
@@ -75,7 +80,7 @@ def render(db, mark):
         # real P&L at spot.
         name = st.selectbox("Underlying", names, key=f"ztrade_payoff_und_{group.id}")
 
-    spot, source = PO.spot_from_book(items, contracts, name)
+    spot, source = H.underlying_spot(db, items, contracts, name)
 
     probe = PO.build(items, contracts, spot, underlying=name, points=2)
     if probe is None:
@@ -87,7 +92,13 @@ def render(db, mark):
         return
 
     centre = probe['centre']
-    auto_pct = max(1, min(40, round(probe['half_width'] / centre * 100)))
+    # Open wide enough to hold the deploy-time reference too, so both band sets
+    # are on screen the first time the chart is drawn however far the underlying
+    # has since travelled. The slider then belongs entirely to the user.
+    auto = probe['half_width']
+    if G.has_baseline(group):
+        auto = max(auto, abs(group.baseline_spot - centre) + 2 * group.baseline_sigma)
+    auto_pct = max(1, min(40, round(auto / centre * 100)))
     pct = st.slider("Price range (± %)", 1, 40, auto_pct, key=f"ztrade_payoff_zoom_{group.id}",
                     help="How far either side of centre to plot. Widen it to see "
                          "where the wings finish; narrow it to read the middle.")
@@ -100,7 +111,7 @@ def render(db, mark):
                             'modeBarButtonsToRemove': ['select2d', 'lasso2d',
                                                        'autoScale2d']},
                     key=f"ztrade_payoff_fig_{group.id}")
-    _summary(data, source, len(names))
+    _summary(group, data, source, len(names))
 
 
 def _figure(group, data, name):
@@ -110,7 +121,7 @@ def _figure(group, data, name):
     expiry_label = f"At expiry ({front:%d %b})" if front else "At settlement"
 
     fig = go.Figure()
-    _sd_bands(fig, data, colour)
+    _sd_bands(fig, data, group, colour)
     fig.add_hline(y=0, line=dict(color=colour['axis'], width=1))
 
     # Unified hover names each series off its `name`, so the template carries
@@ -180,37 +191,69 @@ def _figure(group, data, name):
     return fig
 
 
-def _sd_bands(fig, data, colour):
-    """Shade ±1SD and ±2SD, and label the four edges.
+def _sd_bands(fig, data, group, colour):
+    """The ±1SD / ±2SD lines — today's in dark grey, deploy-time in light grey.
 
-    The inner band is one rect straddling spot; the outer is the two shoulders
-    either side of it, so the shading darkens toward the middle rather than
-    double-painting it.
+    Today's set is shaded as well as ruled: one rect straddling spot for ±1SD
+    and a shoulder either side for ±2SD, so the tint deepens toward the middle
+    instead of double-painting it. The reference set is ruled only — two sets of
+    shading would just be mud — and is labelled at the bottom so its four lines
+    never collide with today's labels along the top.
     """
+    _reference_bands(fig, group, colour)
+
     sigma, spot = data['sigma'], data['spot']
     if not sigma:
         return
-    bands = [
-        (spot - 2 * sigma, spot - sigma, colour['band_outer']),
-        (spot + sigma, spot + 2 * sigma, colour['band_outer']),
-        (spot - sigma, spot + sigma, colour['band']),
-    ]
-    for x0, x1, fill in bands:
+    for x0, x1, fill in ((spot - 2 * sigma, spot - sigma, colour['band_outer']),
+                         (spot + sigma, spot + 2 * sigma, colour['band_outer']),
+                         (spot - sigma, spot + sigma, colour['band'])):
         fig.add_vrect(x0=x0, x1=x1, fillcolor=fill, line_width=0, layer='below')
     for multiple in (1, 2):
         for sign in (-1, 1):
             fig.add_vline(x=spot + sign * multiple * sigma,
-                          line=dict(color=colour['grid'], width=1),
+                          line=dict(color=colour['sd_now'], width=1),
                           annotation_text=f"{'-' if sign < 0 else ''}{multiple}SD",
                           annotation_position="top",
                           annotation_font=dict(size=10, color=colour['muted']))
 
 
+def _reference_bands(fig, group, colour):
+    """The range the group was armed against, frozen at deploy.
+
+    Anchored on the *deploy-time* spot rather than today's, so the gap between
+    the two centres is how far the underlying has drifted since — which is the
+    thing worth seeing.
+
+    Deliberately unlabelled. The centre is the only dotted vertical on the
+    chart, and its exact price, the drift and the IV either side of it are all
+    spelled out in the caption — whereas a label here has nowhere safe to sit:
+    the top row is taken by today's SD labels and the spot marker it sits close
+    to, and the bottom row is the price axis.
+    """
+    if not G.has_baseline(group):
+        return
+    spot, sigma = group.baseline_spot, group.baseline_sigma
+    for multiple in (1, 2):
+        for sign in (-1, 1):
+            fig.add_vline(x=spot + sign * multiple * sigma,
+                          line=dict(color=colour['sd_ref'], width=1))
+    fig.add_vline(x=spot, line=dict(color=colour['sd_ref'], width=1.5, dash='dot'))
+
+
 def _levels(fig, group, bounds, colour):
     """The group's stoploss and target as horizontal levels, where they fit."""
     lo, hi = bounds
-    for value, ink, label in ((group.stoploss, CRITICAL, "🛑 Stoploss"),
-                              (group.target, GOOD, "🎯 Target")):
+    span = (hi - lo) or 1.0
+    # A position whose tail risk dwarfs its levels — 20 lots short against a
+    # ₹40k stoploss, say — squashes the two lines within a few pixels of each
+    # other, and their labels then overprint. Push them to opposite sides of
+    # their own lines when that happens.
+    crowded = (group.stoploss is not None and group.target is not None
+               and abs(group.target - group.stoploss) / span < 0.06)
+    for value, ink, label, side in ((group.stoploss, CRITICAL, "🛑 Stoploss",
+                                     "bottom right" if crowded else "top right"),
+                                    (group.target, GOOD, "🎯 Target", "top right")):
         if value is None or not lo <= value <= hi:
             continue
         # Labelled inside the plot, right-hand end: parking them outside would
@@ -218,7 +261,7 @@ def _levels(fig, group, bounds, colour):
         # end is where the rupee ticks are.
         fig.add_hline(y=value, line=dict(color=ink, width=1.5, dash='dash'),
                       annotation_text=f"{label} {_short_money(value)}",
-                      annotation_position="top right",
+                      annotation_position=side,
                       annotation_font=dict(size=11, color=colour['text']))
 
 
@@ -236,7 +279,7 @@ def _y_range(group, data):
     return lo - pad, hi + pad
 
 
-def _summary(data, source, n_underlyings):
+def _summary(group, data, source, n_underlyings):
     """The numbers the curve implies, written out under it."""
     sigma, spot = data['sigma'], data['spot']
     best, worst = max(data['expiry_pnl']), min(data['expiry_pnl'])
@@ -258,6 +301,8 @@ def _summary(data, source, n_underlyings):
         notes.append(f"underlying **{spot:,.2f}** by {source}")
     notes.append(f"redrawn every {H.LIVE_SECONDS}s")
     st.caption(" · ".join(notes) + ".")
+
+    _reference_note(group, data)
 
     caveats = []
     if not spot:
@@ -284,6 +329,38 @@ def _summary(data, source, n_underlyings):
             "only moves with the underlying selected above.")
     if caveats:
         st.caption("ℹ️ " + "  ".join(caveats))
+
+
+def _reference_note(group, data):
+    """What the light-grey band is, and how to read the gap to today's."""
+    if not G.has_baseline(group):
+        if group.status in (G.DEPLOYED, G.TRIGGERED):
+            st.caption("◦ No deploy-time reference band: this group was armed before "
+                       "the baseline was recorded, or its underlying couldn't be "
+                       "priced at that moment. Undeploy and redeploy to take one.")
+        return
+
+    ref_spot, ref_sigma = group.baseline_spot, group.baseline_sigma
+    spot, sigma = data['spot'], data['sigma']
+    bits = [f"Light grey is the range this group was armed against "
+            f"({H.ist(group.baseline_at)} IST): **{ref_spot:,.0f}** ±{ref_sigma:,.0f}"]
+    if spot:
+        drift = spot - ref_spot
+        bits.append(f"underlying has moved **{drift:+,.0f}** "
+                    f"({drift / ref_spot * 100:+.2f}%), {abs(drift) / ref_sigma:.2f}× "
+                    f"that SD")
+    if sigma:
+        bits.append(f"today's band is ±{sigma:,.0f}")
+    iv_now, iv_ref = data['atm_iv'], group.baseline_iv
+    if iv_now and iv_ref:
+        bits.append(f"ATM IV **{100 * iv_ref:.1f}% → {100 * iv_now:.1f}%**")
+    st.caption(" · ".join(bits) + ".")
+
+    # Only worth saying once the widths have actually parted company.
+    if sigma and abs(sigma - ref_sigma) / ref_sigma > 0.15:
+        st.caption("ℹ️ Most of that change in width is the calendar, not the market: "
+                   "σ scales with √(time to expiry), so the band narrows every day "
+                   "even at flat IV. The IV pair above is the like-for-like read.")
 
 
 # ----- rupee axis --------------------------------------------------------

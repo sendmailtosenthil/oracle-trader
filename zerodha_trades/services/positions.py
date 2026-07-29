@@ -152,6 +152,23 @@ def contracts(enctoken, user_id, tradingsymbols):
     return fetch_with_retry(lambda: client.contract_map(tradingsymbols))
 
 
+def spot_tokens(enctoken, user_id, names):
+    """``{underlying_name: instrument_token}`` for the things derivatives track."""
+    if not enctoken or not names:
+        return {}
+    client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
+    resolved = {n: fetch_with_retry(lambda n=n: client.spot_token(n)) for n in names}
+    return {n: t for n, t in resolved.items() if t}
+
+
+def spot_price(enctoken, user_id, instrument_token):
+    """Latest traded price of an underlying — see ``ZerodhaClient.last_traded_price``."""
+    if not enctoken or not instrument_token:
+        return None
+    client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
+    return fetch_with_retry(lambda: client.last_traded_price(instrument_token))
+
+
 def open_only(positions):
     """Only the legs still open (non-zero quantity)."""
     return [p for p in positions if p['quantity'] != 0]

@@ -706,12 +706,19 @@ def accounts_with_groups(db):
 
 
 # ----- lifecycle ---------------------------------------------------------
-def deploy(db, group, lot_sizes=None):
+def deploy(db, group, lot_sizes=None, baseline=None):
     """Arm a group for monitoring. Returns ``(ok, error)``.
 
     Re-checks every leg's quantity rather than trusting what was stored: a leg
     saved before the whole-lot rule existed, or while the lot size could not be
     resolved, must not slip into a monitored group.
+
+    ``baseline`` is ``{'spot', 'sigma', 'iv'}`` as of now — where the underlying
+    stood and how far the market implied it could travel before the front
+    expiry. Frozen here because deploying is the moment the group starts being
+    monitored, and therefore the range the user actually accepted. Optional: a
+    group whose spot cannot be established still deploys, just without a
+    reference band on its chart.
     """
     legs = legs_of(db, group.id)
     if not legs:
@@ -739,8 +746,28 @@ def deploy(db, group, lot_sizes=None):
     group.triggered_at = None
     group.triggered_pnl = None
     group.notified_at = None
+    set_baseline(group, baseline)
     db.commit()
     return True, None
+
+
+def set_baseline(group, baseline):
+    """Freeze (or clear) the expected range a group was armed against.
+
+    Passing ``None`` clears it, which is what undeploying does: the range was
+    the one accepted for *that* arming, and a group returned to draft has no
+    live commitment for it to be a reference against.
+    """
+    group.baseline_spot = baseline and baseline.get('spot')
+    group.baseline_sigma = baseline and baseline.get('sigma')
+    group.baseline_iv = baseline and baseline.get('iv')
+    group.baseline_at = datetime.datetime.utcnow() if baseline else None
+
+
+def has_baseline(group):
+    """True when a group carries a usable frozen range."""
+    return bool(getattr(group, 'baseline_spot', None)
+                and getattr(group, 'baseline_sigma', None))
 
 
 def undeploy(db, group):
@@ -751,4 +778,5 @@ def undeploy(db, group):
     group.triggered_at = None
     group.triggered_pnl = None
     group.notified_at = None
+    set_baseline(group, None)
     db.commit()

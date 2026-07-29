@@ -245,6 +245,15 @@ class TradeGroup(Base):
     triggered_at = Column(DateTime, nullable=True)
     triggered_pnl = Column(Float, nullable=True)
     deployed_at = Column(DateTime, nullable=True)
+    # Where the underlying stood, and how wide the market implied it could
+    # travel, at the moment the group was armed. Frozen on deploy and cleared on
+    # undeploy, so the payoff chart can draw the expected range you accepted
+    # alongside today's and show the drift between them. NULL until deployed, or
+    # when the spot could not be established at that moment.
+    baseline_spot = Column(Float, nullable=True)
+    baseline_sigma = Column(Float, nullable=True)   # 1SD in points, at deploy
+    baseline_iv = Column(Float, nullable=True)      # the ATM vol behind it
+    baseline_at = Column(DateTime, nullable=True)
     last_pnl = Column(Float, default=0.0)           # most recently marked P&L
     last_evaluated_at = Column(DateTime, nullable=True)
     notified_at = Column(DateTime, nullable=True)   # last alert sent (dedupe)

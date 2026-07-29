@@ -4,6 +4,7 @@ import datetime
 import pytz
 import streamlit as st
 
+from zerodha_trades.services import payoff
 from zerodha_trades.services import positions
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -164,3 +165,48 @@ def lot_sizes(db, symbols):
     whole-lots rule rather than blocking the user on a broker hiccup.
     """
     return {s: c['lot_size'] for s, c in contracts(db, symbols).items()}
+
+
+# An underlying's spot token never changes, so it is cached as long as the
+# contract detail it comes from.
+@st.cache_data(ttl=21600, max_entries=4, show_spinner=False)
+def _spot_tokens_cached(enctoken, user_id, names):
+    return positions.spot_tokens(enctoken, user_id, names)
+
+
+# The price behind it does change, so it is cached only as long as the live
+# refresh — one small call per underlying per cycle, however many charts are
+# open on it.
+@st.cache_data(ttl=LIVE_SECONDS, max_entries=8, show_spinner=False)
+def _spot_price_cached(enctoken, user_id, instrument_token):
+    return positions.spot_price(enctoken, user_id, instrument_token)
+
+
+def spot_price(db, name):
+    """Last traded price of the underlying ``name`` tracks, or ``None``.
+
+    Degrades to ``None`` rather than raising; :func:`underlying_spot` has the
+    fallbacks.
+    """
+    user_id, enctoken = _any_account(db)
+    if not enctoken or not name:
+        return None
+    try:
+        token = _spot_tokens_cached(enctoken, user_id, (name,)).get(name)
+        return _spot_price_cached(enctoken, user_id, token) if token else None
+    except Exception:  # noqa: BLE001 - the caller falls back and says so
+        return None
+
+
+def underlying_spot(db, items, contracts, name):
+    """``(spot, source)`` for an underlying, best source first.
+
+    The index or stock's own last print, else whatever the group's own marks
+    imply (see :func:`payoff.spot_from_book`). One place, so the chart and the
+    deploy-time baseline can never disagree about where the underlying was —
+    which would make the reference band meaningless.
+    """
+    price = spot_price(db, name)
+    if price:
+        return price, f"{name} last traded"
+    return payoff.spot_from_book(items, contracts, name)
