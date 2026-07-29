@@ -14,13 +14,15 @@ bash deploy/setup.sh          # run again: installs service + cron, starts the a
 
 ## What it installs
 - **systemd service `oracle-web`** — the Streamlit app on port 8501, `Restart=always`, starts on boot.
-- **`MALLOC_ARENA_MAX=2` on both services** — glibc gives each thread its own
-  malloc arena, which inflates RSS on a threaded Python process well past what
-  is live. Worth real memory back on a sub-1GB host. Re-running `setup.sh` /
-  `setup-api.sh` installs it; to add it to units already on the box:
+- **`MALLOC_ARENA_MAX=2` in `.env`** — glibc gives each thread its own malloc
+  arena, which inflates RSS on a threaded Python process well past what is live.
+  Worth real memory back on a sub-1GB host. It lives in `.env` rather than the
+  units so it reaches the cron jobs too (`run-job.sh` exports that file, and the
+  downloader is the hungriest process here). On an existing install add the line
+  yourself — `setup.sh` only seeds `.env` when it is missing:
   ```bash
-  sudo systemctl edit --full oracle-web    # add: Environment=MALLOC_ARENA_MAX=2
-  sudo systemctl daemon-reload && sudo systemctl restart oracle-web
+  echo 'MALLOC_ARENA_MAX=2' >> .env
+  sudo systemctl restart oracle-web oracle-api
   ```
 - **System timezone set to `Asia/Kolkata`** — Ubuntu's cron ignores `CRON_TZ`, so the box itself is put on IST and cron's system-local time *is* IST. Without this, jobs run in UTC (5.5h late). App logic is unaffected (it uses explicit `datetime.now(IST)`).
 - **User crontab** — the four jobs in IST: `signals` 15:35, `download` 15:40, `backup` 16:00, `summary` 08:30. Each runs `python -m bees.bot <job>` from the venv and exits.
