@@ -125,11 +125,24 @@ def live_positions_by_account(db, only=None):
 
 
 # Contract detail only changes when the exchange revises an instrument, so an
-# hours-long TTL is plenty and keeps the instruments dump off the wire on every
-# rerun. Lot sizes are a projection of the same fetch, sharing its cache entry.
-@st.cache_data(ttl=21600, max_entries=4, show_spinner=False)
-def _contracts_cached(enctoken, user_id, symbols):
-    return positions.contracts(enctoken, user_id, symbols)
+# hours-long TTL is plenty.
+#
+# Accumulated in one store rather than cached per requested symbol set. Keying on
+# the set gave Group Management (every symbol on the page) and each group's
+# payoff view (just its own legs) separate entries, so once there were more
+# distinct sets than `max_entries` they evicted each other and re-streamed the
+# whole 113,800-row instruments master — from inside a fragment that reruns every
+# ten seconds. Accumulating means a symbol is looked up once and every later
+# caller, whatever set it asks for, is free.
+@st.cache_resource(ttl=21600, show_spinner=False)
+def _contract_store():
+    """``{tradingsymbol: contract | None}``, shared process-wide.
+
+    ``None`` records "looked this up, the exchange does not list it", so a
+    delisted or mistyped symbol is not re-fetched on every rerun. Concurrent
+    reruns may duplicate a fetch, which costs a little work and nothing else.
+    """
+    return {}
 
 
 def _any_account(db):
@@ -145,17 +158,29 @@ def _any_account(db):
 def contracts(db, symbols):
     """``{tradingsymbol: contract}`` from the instruments master, or ``{}``.
 
-    Degrading to an empty map is deliberate: callers relax rather than block the
-    user on a broker hiccup.
+    Only the symbols never looked up before cost anything; the rest come out of
+    :func:`_contract_store`. Degrading to an empty map is deliberate: callers
+    relax rather than block the user on a broker hiccup.
     """
-    symbols = tuple(sorted({s for s in symbols if s}))
-    user_id, enctoken = _any_account(db)
-    if not enctoken or not symbols:
+    wanted = {s for s in symbols if s}
+    if not wanted:
         return {}
-    try:
-        return _contracts_cached(enctoken, user_id, symbols)
-    except Exception:  # noqa: BLE001 - callers relax, page still works
-        return {}
+    store = _contract_store()
+    unknown = tuple(sorted(wanted - store.keys()))
+    if unknown:
+        user_id, enctoken = _any_account(db)
+        found = None
+        if enctoken:
+            try:
+                found = positions.contracts(enctoken, user_id, unknown)
+            except Exception:  # noqa: BLE001 - callers relax, page still works
+                found = None
+        # Only record absences when the lookup actually succeeded. Marking them
+        # on a failed fetch would remember "not listed" for the whole TTL and
+        # leave the chart permanently unable to price the group.
+        if found is not None:
+            store.update({s: found.get(s) for s in unknown})
+    return {s: c for s in wanted if (c := store.get(s))}
 
 
 def lot_sizes(db, symbols):
