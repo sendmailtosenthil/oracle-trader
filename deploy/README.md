@@ -66,8 +66,16 @@ except the first:
 venv/bin/python -m migrations.add_user_permissions        # logins -> per-page permissions
 venv/bin/python -m migrations.move_zerodha_credentials    # accounts -> owners + encrypted creds
 venv/bin/python -m migrations.add_settled_pnl             # leg P&L -> banked + live
+venv/bin/python -m migrations.add_group_baseline          # groups -> deploy-time SD reference
 ```
 Existing logins become administrators, so nobody is locked out by the upgrade.
+
+`add_group_baseline` records, when a group is deployed, where its underlying
+stood and how far the market implied it could travel before the front expiry.
+The payoff chart draws that frozen range in light grey behind the live one, so
+the gap between their centres is the drift since arming. Nothing is backfilled:
+a group deployed before the upgrade has no honest baseline available, and picks
+one up on its next redeploy.
 
 `add_settled_pnl` splits a trade leg's P&L into what closed cycles already made
 and what the position currently held is doing. That is what lets a contract be

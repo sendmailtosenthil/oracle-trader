@@ -393,11 +393,19 @@ def _ensure_columns():
         # Pre-multi-account groups all belonged to the master login.
         # owner/shared arrive NULL and 0: an unowned group is claimable by the
         # migration, and nothing is shared until somebody says so.
+        # The expected range a group was armed against, frozen on deploy. All
+        # NULL for a group deployed before this existed — deliberately, since
+        # that moment's spot and vol are gone; it takes a baseline on its next
+        # redeploy. See migrations/add_group_baseline.py.
         'ztrade_groups': [("user_id", "VARCHAR DEFAULT 'PC8006'"),
                           ('notify_email', 'BOOLEAN DEFAULT 1'),
                           ('notify_telegram', 'BOOLEAN DEFAULT 1'),
                           ('owner', 'VARCHAR'),
-                          ('shared', 'BOOLEAN DEFAULT 0')],
+                          ('shared', 'BOOLEAN DEFAULT 0'),
+                          ('baseline_spot', 'FLOAT'),
+                          ('baseline_sigma', 'FLOAT'),
+                          ('baseline_iv', 'FLOAT'),
+                          ('baseline_at', 'DATETIME')],
         # Legs gained a banked/live P&L split so a contract can be closed and
         # re-opened without losing what the first cycle made. frozen_pnl is
         # migrated into settled_pnl by migrations/add_settled_pnl.py.
