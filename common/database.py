@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import create_engine, event, Column, Integer, String, Float, Boolean, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker
 import datetime
 import hashlib
@@ -340,9 +340,41 @@ class TradeGroupSetting(Base):
 engine = None
 SessionLocal = None
 
+# SQLite's default rollback journal gives a writer an exclusive lock on the
+# whole file, so every reader blocks until the write finishes — and with
+# synchronous=FULL each commit waits on an fsync. The poller writes a snapshot
+# per account every few seconds while the web app reads the same file on its own
+# timers, so on a slow disk the two spend their time queueing behind each other
+# and the UI stalls (up to busy_timeout) for something that should take no time.
+#
+# WAL fixes it properly: writers append to a side log, readers are never blocked,
+# and one writer at a time is all this app ever has. synchronous=NORMAL is the
+# documented safe pairing — a crash can lose the tail of the last transaction but
+# cannot corrupt the database, which is the right trade for a position snapshot
+# that is refetched seconds later.
+#
+# journal_mode is persisted in the file header, so it only takes once; the other
+# two are per-connection and must be set on every connect.
+_PRAGMAS = (
+    "PRAGMA journal_mode=WAL",
+    "PRAGMA synchronous=NORMAL",
+    "PRAGMA busy_timeout=10000",
+)
+
+
+def _apply_pragmas(dbapi_connection, _record):
+    cursor = dbapi_connection.cursor()
+    try:
+        for pragma in _PRAGMAS:
+            cursor.execute(pragma)
+    finally:
+        cursor.close()
+
+
 def init_db(db_path='sqlite:///oracle.db'):
     global engine, SessionLocal
     engine = create_engine(db_path, connect_args={"check_same_thread": False})
+    event.listen(engine, "connect", _apply_pragmas)
     _drop_stale_caches()
     Base.metadata.create_all(bind=engine)
     _ensure_columns()

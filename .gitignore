@@ -2,6 +2,9 @@ venv/
 __pycache__/
 *.pyc
 *.db
+# WAL sidecars — recreated by SQLite, and the -wal holds uncheckpointed rows
+*.db-wal
+*.db-shm
 # Database backups (contain live broker enctoken + password hashes — never commit)
 *.bak
 oracle.db.*
