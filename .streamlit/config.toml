@@ -1,2 +1,9 @@
 [theme]
 primaryColor = "#0068c9"
+
+[server]
+# The dev-reload watcher polls the whole source tree for changes. On the VPS the
+# code only changes on a deliberate `git pull` + restart, so the watcher buys
+# nothing and spends CPU the box does not have to spare — one physical core is
+# shared by Streamlit, the poller, and every refresh timer.
+fileWatcherType = "none"

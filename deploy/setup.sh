@@ -62,6 +62,11 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$APP_DIR/.env
+# glibc gives each thread its own malloc arena (up to 8x cores), and Streamlit is
+# threaded — so RSS inflates well past what is actually live. Capping the arenas
+# trades a little allocator contention for real memory back, which is the right
+# way round on a sub-1GB host.
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=$APP_DIR/venv/bin/streamlit run app.py --server.port $PORT --server.address 0.0.0.0
 Restart=always
 RestartSec=5

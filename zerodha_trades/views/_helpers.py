@@ -9,9 +9,15 @@ from zerodha_trades.services import positions
 
 IST = pytz.timezone("Asia/Kolkata")
 
-# How often a live view re-marks itself. Matches the poller's default cycle —
-# anything faster just redraws the same snapshot.
-LIVE_SECONDS = 10
+# How often a live view re-marks itself — the card grid and the open dialog both
+# use it, and it doubles as the TTL on the underlying's spot price.
+#
+# Every tick re-runs Python on a box with one physical core, shared with the
+# poller. Two timers per browser tab at 10s is twelve wake-ups a minute before
+# anyone clicks anything; 20s halves that and is still far tighter than a human
+# reacts to a P&L figure. Alerts do not depend on this at all — the poller
+# evaluates stoplosses server-side on its own cycle.
+LIVE_SECONDS = 20
 
 STATUS_BADGE = {
     'draft': ":gray-badge[Draft]",

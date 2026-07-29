@@ -38,6 +38,9 @@ User=$RUN_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$APP_DIR/.env
 Environment=PYTHONPATH=$APP_DIR
+# See deploy/setup.sh: cap glibc's per-thread malloc arenas so the poller's
+# fetch threads don't inflate RSS on a sub-1GB host.
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=$APP_DIR/venv/bin/python -m api.server
 Restart=always
 RestartSec=5

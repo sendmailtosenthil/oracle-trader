@@ -34,8 +34,8 @@ def render(db):
 
     _poller_bar(db)
     _cards(db)
-    # Rendered from the main body, not from the auto-refreshing fragment: a
-    # fragment rerun every 10s fights the dialog's lifecycle, leaving Close
+    # Rendered from the main body, not from the auto-refreshing card fragment: a
+    # fragment rerun on a timer fights the dialog's lifecycle, leaving Close
     # unable to dismiss it.
     _maybe_dialog(db)
 
@@ -99,9 +99,13 @@ def _poller_bar(db):
                 "check `journalctl -u oracle-api -f` if this persists.")
 
 
-@st.fragment(run_every=10)
+@st.fragment(run_every=H.LIVE_SECONDS)
 def _cards(db):
-    """The card grid, rerunning on its own every 10s off the stored snapshot."""
+    """The card grid, rerunning on its own off the stored snapshot.
+
+    Shares :data:`H.LIVE_SECONDS` with the dialog so the page has one refresh
+    cadence to reason about rather than two competing timers.
+    """
     # Your groups, plus any another user chose to share. Administrators see the
     # lot. A group nobody shared with you is not merely hidden from the grid —
     # its P&L never reaches this page.
