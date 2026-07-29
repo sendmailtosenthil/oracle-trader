@@ -14,6 +14,7 @@ from zerodha_trades import poller as PL
 from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
+from zerodha_trades.views import payoff_chart
 
 PAGE = "ztrade.dashboard"
 
@@ -21,6 +22,9 @@ CARDS_PER_ROW = 3
 
 # Id of the group whose breakdown dialog is open, if any.
 OPEN_DIALOG = "_ztrade_open_dialog"
+
+# The two ways to read a group's book, inside the dialog.
+TABLE_VIEW, PAYOFF_VIEW = "📋 Table", "📈 Payoff"
 
 
 def render(db):
@@ -47,8 +51,8 @@ def _maybe_dialog(db):
     if group is None or not G.can_view_group(group):
         st.session_state.pop(OPEN_DIALOG, None)
         return
-    live_map = P.snapshot_maps(db).get(group.user_id, {})
-    _positions_dialog(G.mark_group(db, group, live_map))
+    # Only the group: the dialog's body marks it for itself, on its own clock.
+    _positions_dialog(db, group)
 
 
 def _poller_bar(db):
@@ -180,47 +184,83 @@ def _forget_dialog():
 
 
 @st.dialog("Group positions", width="large", on_dismiss=_forget_dialog)
-def _positions_dialog(mark):
-    """Per-instrument breakdown behind a card's P&L."""
-    group, pnl = mark['group'], mark['pnl']
+def _positions_dialog(db, group):
+    """Per-instrument breakdown behind a card's P&L, as a table or a payoff chart.
+
+    Only the frame: the header, which does not move, and the Close button. The
+    figures live in :func:`_live_body`, which re-marks them on its own clock.
+    """
     st.markdown(f"**{group.name}**  `{group.user_id}`  "
                 f"{H.STATUS_BADGE.get(group.status, group.status)}"
                 f" &nbsp;·&nbsp; SL {H.money(group.stoploss)}"
                 f" &nbsp;·&nbsp; Target {H.money(group.target)}")
 
-    if not mark['legs']:
+    if not G.legs_of(db, group.id):
         st.info("This group has no positions yet.")
     else:
-        st.dataframe(
-            [{
-                'Instrument': item['leg'].tradingsymbol,
-                'Group Qty': item['leg'].quantity,
-                'Avg': item['average_price'],
-                'LTP': item['last_price'],
-                'P&L': item['pnl'],
-                'State': item['state'],
-            } for item in mark['legs']],
-            hide_index=True,
-            width='stretch',
-            column_config={
-                'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
-                'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
-                'P&L': st.column_config.NumberColumn(
-                    "P&L", format="%.2f",
-                    help="Group Qty × (LTP − Avg) — this group's share of the leg."),
-            },
-        )
-        st.markdown(f"### Total {H.colored_money(pnl)}")
-        # Streamlit will not re-render a dialog that is already open, so this
-        # is the book as of the moment it was opened even though the cards
-        # behind it keep ticking. Timestamp it rather than imply it is live.
-        st.caption(f"{mark['n_legs']} instrument(s) · {mark['open_legs']} open · "
-                   f"priced {H.ist(group.last_evaluated_at)} IST — reopen for a "
-                   f"newer mark.")
+        _live_body(db, group.id)
 
+    # Outside the fragment on purpose: Close needs a full rerun to tear the
+    # dialog down, which a fragment-scoped rerun would not give it.
     if st.button("Close", key=f"ztrade_dlgclose_{group.id}"):
         st.session_state.pop(OPEN_DIALOG, None)
         st.rerun()
+
+
+@st.fragment(run_every=H.LIVE_SECONDS)
+def _live_body(db, group_id):
+    """The table or the chart, re-marked every few seconds so the dialog ticks.
+
+    Re-reads the group and the snapshot rather than closing over the mark the
+    dialog opened with: a fragment rerun does not re-run the page, so nothing
+    else would ever refresh it. Only this block reruns, which is why the header
+    and Close button sit outside it.
+    """
+    group = G.get_group(db, group_id)
+    # Deleted or unshared in another tab while the dialog sat open — the same
+    # re-check the dialog does on open, because a fragment outlives that check.
+    if group is None or not G.can_view_group(group):
+        st.warning("This group is no longer visible to you. Close and reopen.")
+        return
+    mark = G.mark_group(db, group, P.snapshot_maps(db).get(group.user_id, {}))
+
+    # The table is the whole book, open and closed alike; the chart can only
+    # speak for what is still open, so the table stays the default.
+    view = st.segmented_control(
+        "View", [TABLE_VIEW, PAYOFF_VIEW], default=TABLE_VIEW,
+        key=f"ztrade_view_{group_id}", label_visibility="collapsed")
+    if view == PAYOFF_VIEW:
+        payoff_chart.render(db, mark)
+    else:
+        _positions_table(mark)
+
+
+def _positions_table(mark):
+    """Every leg the group holds, open and closed."""
+    group = mark['group']
+    st.dataframe(
+        [{
+            'Instrument': item['leg'].tradingsymbol,
+            'Group Qty': item['leg'].quantity,
+            'Avg': item['average_price'],
+            'LTP': item['last_price'],
+            'P&L': item['pnl'],
+            'State': item['state'],
+        } for item in mark['legs']],
+        hide_index=True,
+        width='stretch',
+        column_config={
+            'Avg': st.column_config.NumberColumn("Avg", format="%.2f"),
+            'LTP': st.column_config.NumberColumn("LTP", format="%.2f"),
+            'P&L': st.column_config.NumberColumn(
+                "P&L", format="%.2f",
+                help="Group Qty × (LTP − Avg) — this group's share of the leg."),
+        },
+    )
+    st.markdown(f"### Total {H.colored_money(mark['pnl'])}")
+    st.caption(f"{mark['n_legs']} instrument(s) · {mark['open_legs']} open · "
+               f"priced {H.ist(group.last_evaluated_at)} IST · "
+               f"re-marked every {H.LIVE_SECONDS}s off the poller's snapshot.")
 
 
 # Only one side is ever in play, so only one bar is ever drawn: red running

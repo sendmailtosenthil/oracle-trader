@@ -135,13 +135,19 @@ class ZerodhaClient:
         payload = self._get("/oms/portfolio/positions")
         return (payload.get("data") or {}).get("net") or []
 
-    def lot_size_map(self, tradingsymbols, timeout=60):
-        """Return ``{tradingsymbol: lot_size}`` for just the symbols asked for.
+    def contract_map(self, tradingsymbols, timeout=60):
+        """Return ``{tradingsymbol: {...}}`` contract detail for the given symbols.
+
+        Each value carries what a derivative needs to be priced — ``name`` (the
+        underlying), ``expiry``, ``strike``, ``instrument_type`` (CE/PE/FUT/EQ),
+        ``lot_size``, ``segment`` and ``exchange``. Equity rows report a lot size
+        of 1; derivatives carry the real contract size (NIFTY 65, BANKNIFTY 35, …).
 
         Streams the instruments dump and keeps only the handful of rows that
         match, so the ~100k-row master is never materialised — same low-memory
-        approach as :meth:`nse_eq_token_map`. Equity rows report a lot size of
-        1; derivatives carry the real contract size (NIFTY 65, BANKNIFTY 35, …).
+        approach as :meth:`nse_eq_token_map` — and stops reading the moment
+        every wanted symbol is found. The first row wins for a symbol listed on
+        more than one exchange, which is what makes the early exit safe.
         """
         wanted = set(tradingsymbols or ())
         if not wanted:
@@ -155,12 +161,22 @@ class ZerodhaClient:
             return {}
         out = {}
         for row in reader:
-            if len(row) < 12 or row[2] not in wanted:
+            if len(row) < 12 or row[2] not in wanted or row[2] in out:
                 continue
             try:
-                out[row[2]] = int(row[8])
+                lot_size = int(row[8])
             except ValueError:
                 continue
+            out[row[2]] = {
+                "tradingsymbol": row[2],
+                "name": row[3],
+                "expiry": row[5] or "",
+                "strike": _safe_float(row[6]),
+                "lot_size": lot_size,
+                "instrument_type": row[9],
+                "segment": row[10],
+                "exchange": row[11],
+            }
             if len(out) == len(wanted):
                 break  # found them all — stop reading the stream
         return out

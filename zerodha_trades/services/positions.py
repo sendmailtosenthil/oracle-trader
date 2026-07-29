@@ -140,12 +140,16 @@ def fetch_for(db):
     return fetch(enctoken, user_id)
 
 
-def lot_sizes(enctoken, user_id, tradingsymbols):
-    """``{tradingsymbol: lot_size}`` for the given symbols (F&O contract size)."""
+def contracts(enctoken, user_id, tradingsymbols):
+    """``{tradingsymbol: contract}`` — strike, expiry, type and lot size.
+
+    What the payoff diagram needs to price a leg, straight off the instruments
+    master. See :meth:`ZerodhaClient.contract_map`.
+    """
     if not enctoken or not tradingsymbols:
         return {}
     client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
-    return fetch_with_retry(lambda: client.lot_size_map(tradingsymbols))
+    return fetch_with_retry(lambda: client.contract_map(tradingsymbols))
 
 
 def open_only(positions):

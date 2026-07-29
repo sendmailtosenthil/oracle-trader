@@ -8,6 +8,10 @@ from zerodha_trades.services import positions
 
 IST = pytz.timezone("Asia/Kolkata")
 
+# How often a live view re-marks itself. Matches the poller's default cycle —
+# anything faster just redraws the same snapshot.
+LIVE_SECONDS = 10
+
 STATUS_BADGE = {
     'draft': ":gray-badge[Draft]",
     'deployed': ":blue-badge[Deployed]",
@@ -119,11 +123,38 @@ def live_positions_by_account(db, only=None):
     return results, fetched_at
 
 
-# Lot sizes only change when the exchange revises a contract, so an hours-long
-# TTL is plenty and keeps the instruments dump off the wire on every rerun.
+# Contract detail only changes when the exchange revises an instrument, so an
+# hours-long TTL is plenty and keeps the instruments dump off the wire on every
+# rerun. Lot sizes are a projection of the same fetch, sharing its cache entry.
 @st.cache_data(ttl=21600, max_entries=4, show_spinner=False)
-def _lot_sizes_cached(enctoken, user_id, symbols):
-    return positions.lot_sizes(enctoken, user_id, symbols)
+def _contracts_cached(enctoken, user_id, symbols):
+    return positions.contracts(enctoken, user_id, symbols)
+
+
+def _any_account(db):
+    """Credentials of any configured account, or ``(None, None)``.
+
+    The instruments dump and the quote feed are the same for everyone, so
+    whichever token is to hand will do — no need for the master specifically.
+    """
+    creds = positions.credentials(db)
+    return creds[0] if creds else (None, None)
+
+
+def contracts(db, symbols):
+    """``{tradingsymbol: contract}`` from the instruments master, or ``{}``.
+
+    Degrading to an empty map is deliberate: callers relax rather than block the
+    user on a broker hiccup.
+    """
+    symbols = tuple(sorted({s for s in symbols if s}))
+    user_id, enctoken = _any_account(db)
+    if not enctoken or not symbols:
+        return {}
+    try:
+        return _contracts_cached(enctoken, user_id, symbols)
+    except Exception:  # noqa: BLE001 - callers relax, page still works
+        return {}
 
 
 def lot_sizes(db, symbols):
@@ -132,14 +163,4 @@ def lot_sizes(db, symbols):
     Degrading to an empty map is deliberate: quantity validation then skips the
     whole-lots rule rather than blocking the user on a broker hiccup.
     """
-    symbols = tuple(sorted({s for s in symbols if s}))
-    # The instruments dump is the same for everyone, so any configured account's
-    # token can fetch it — no need for the master specifically.
-    creds = positions.credentials(db)
-    if not creds or not symbols:
-        return {}
-    user_id, enctoken = creds[0]
-    try:
-        return _lot_sizes_cached(enctoken, user_id, symbols)
-    except Exception:  # noqa: BLE001 - validation relaxes, page still works
-        return {}
+    return {s: c['lot_size'] for s, c in contracts(db, symbols).items()}
