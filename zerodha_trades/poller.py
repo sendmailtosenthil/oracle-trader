@@ -112,7 +112,10 @@ class Poller:
                 failures.append(f"{user_id}: {res['error']}")
                 self._clients.pop(user_id, None)   # rebuild on the next attempt
                 continue
-            P.save_snapshot(db, user_id, res['positions'])
+            # Left pending: every account's rows, the banking below and the
+            # marks all land in the single commit inside apply_marks, rather
+            # than one fsync per account per cycle.
+            P.save_snapshot(db, user_id, res['positions'], commit=False)
             maps[user_id] = P.as_map(res['positions'])
             n_positions += len(res['positions'])
 
@@ -123,7 +126,10 @@ class Poller:
         marks = G.mark_all(db, maps, groups=markable)
         # Bank the P&L of anything that has just stopped being open, before the
         # broker revises realised out from under it — or drops the row tomorrow.
-        G.bank_settled(db, marks)
+        G.bank_settled(db, marks, commit=False)
+        # Commits everything pending — snapshots, banking, marks — and only then
+        # notifies, so a slow or failing send still cannot lose the fact that a
+        # group tripped.
         fired = G.apply_marks(db, marks, on_trigger=self._notify(settings))
 
         settings.last_poll_at = datetime.datetime.utcnow()

@@ -531,7 +531,7 @@ def set_settled_pnl(db, leg, value, state):
     return None
 
 
-def bank_settled(db, marks):
+def bank_settled(db, marks, commit=True):
     """Move finished cycles into each leg's banked P&L. Returns how many banked.
 
     Called by the poller every cycle, and by Group Management when its owner
@@ -547,6 +547,11 @@ def bank_settled(db, marks):
     remembered mark is banked instead, so the number is never simply lost.
     Because the cycle flag is cleared as it banks, a re-opened contract starts a
     fresh cycle and is banked again on its own close.
+
+    ``commit=False`` leaves the changes pending for a caller that is going to
+    commit anyway — the poller, which then lands banking and marking in one
+    transaction. That is strictly safer than two: a crash between them can no
+    longer bank a cycle whose mark was never recorded.
     """
     banked, dirty = 0, False
     for mark in marks:
@@ -573,7 +578,7 @@ def bank_settled(db, marks):
             leg.cycles = int(leg.cycles or 0) + 1
             banked += 1
             dirty = True
-    if dirty:
+    if dirty and commit:
         db.commit()
     return banked
 

@@ -8,6 +8,7 @@ Open vs closed is decided purely by ``quantity``: a squared-off leg stays in
 Kite's ``net`` list with ``quantity == 0`` and its P&L in ``realised``.
 """
 import datetime
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from common.database import BrokerConfig, PositionSnapshot
@@ -15,6 +16,35 @@ from common.zerodha_client import ZerodhaClient, fetch_with_retry
 
 
 MAX_PARALLEL_ACCOUNTS = 5
+
+# Reusable clients for the small, frequent lookups (contract detail, spot).
+# Building a fresh ZerodhaClient per call means a fresh TLS handshake per call,
+# which roughly doubled their latency — 196ms against 86ms on a warm session.
+#
+# Thread-local, not global: requests.Session is not thread-safe, and Streamlit
+# serves each browser session on its own thread. The poller does not use this —
+# it keeps its own long-lived client per account, one per worker.
+_local = threading.local()
+
+
+def lookup_client(user_id, enctoken):
+    """A client for one account, reused within the calling thread.
+
+    Named apart from ``fetch_many``'s ``client_for`` parameter, which is the
+    poller's own per-worker factory and would otherwise shadow this.
+    """
+    clients = getattr(_local, 'clients', None)
+    if clients is None:
+        clients = _local.clients = {}
+    key = (user_id, enctoken)
+    if key not in clients:
+        # A rotated token makes the old session useless; drop it rather than
+        # accumulate one dead client per refresh.
+        for stale in [k for k in clients if k[0] == user_id]:
+            clients.pop(stale, None)
+        clients[key] = ZerodhaClient(enctoken, user_id=user_id or 'PC8006',
+                                     pace_seconds=0)
+    return clients[key]
 
 
 def broker_credentials(db):
@@ -148,7 +178,7 @@ def contracts(enctoken, user_id, tradingsymbols):
     """
     if not enctoken or not tradingsymbols:
         return {}
-    client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
+    client = lookup_client(user_id, enctoken)
     return fetch_with_retry(lambda: client.contract_map(tradingsymbols))
 
 
@@ -156,7 +186,7 @@ def spot_tokens(enctoken, user_id, names):
     """``{underlying_name: instrument_token}`` for the things derivatives track."""
     if not enctoken or not names:
         return {}
-    client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
+    client = lookup_client(user_id, enctoken)
     resolved = {n: fetch_with_retry(lambda n=n: client.spot_token(n)) for n in names}
     return {n: t for n, t in resolved.items() if t}
 
@@ -165,7 +195,7 @@ def spot_price(enctoken, user_id, instrument_token):
     """Latest traded price of an underlying — see ``ZerodhaClient.last_traded_price``."""
     if not enctoken or not instrument_token:
         return None
-    client = ZerodhaClient(enctoken, user_id=user_id or 'PC8006', pace_seconds=0)
+    client = lookup_client(user_id, enctoken)
     return fetch_with_retry(lambda: client.last_traded_price(instrument_token))
 
 
@@ -184,13 +214,18 @@ def as_map(positions):
     return {position_key(p['tradingsymbol'], p['product']): p for p in positions}
 
 
-def save_snapshot(db, user_id, positions):
+def save_snapshot(db, user_id, positions, commit=True):
     """Upsert one account's polled book into ``ztrade_position_snapshots``.
 
     Scoped to ``user_id``: saving one account never touches another's rows.
     Rows the broker no longer reports are left untouched — a leg that vanishes
     is handled by the group marking code, which freezes its P&L rather than
     silently valuing it at zero.
+
+    ``commit=False`` leaves the rows pending so a caller saving several accounts
+    can land them in one transaction instead of one fsync each. Nothing
+    downstream reads these rows back within a cycle — marking works off the
+    fetched book, not the table — so deferring is safe.
     """
     now = datetime.datetime.utcnow()
     existing = {
@@ -212,7 +247,8 @@ def save_snapshot(db, user_id, positions):
         row.realised = p['realised']
         row.unrealised = p['unrealised']
         row.updated_at = now
-    db.commit()
+    if commit:
+        db.commit()
     return len(positions)
 
 
