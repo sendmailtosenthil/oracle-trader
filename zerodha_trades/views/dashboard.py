@@ -31,6 +31,7 @@ def render(db):
     ACL.guard(PAGE)
     st.title("📦 Zerodha Trades — Dashboard")
     H.inject_css()
+    H.render_flash()
 
     _poller_bar(db)
     _cards(db)
@@ -199,16 +200,103 @@ def _positions_dialog(db, group):
                 f" &nbsp;·&nbsp; SL {H.money(group.stoploss)}"
                 f" &nbsp;·&nbsp; Target {H.money(group.target)}")
 
+    if group.status == G.TRIGGERED and group.trigger_message:
+        st.error(f"{group.trigger_message}  \n_{H.ist(group.triggered_at)} IST_")
+
     if not G.legs_of(db, group.id):
         st.info("This group has no positions yet.")
     else:
         _live_body(db, group.id)
+
+    # Outside the live fragment: a form that re-rendered every few seconds would
+    # wipe half-typed numbers. Owners only — sharing is read-only.
+    if G.can_edit_group(group):
+        _levels_form(db, group)
 
     # Outside the fragment on purpose: Close needs a full rerun to tear the
     # dialog down, which a fragment-scoped rerun would not give it.
     if st.button("Close", key=f"ztrade_dlgclose_{group.id}"):
         st.session_state.pop(OPEN_DIALOG, None)
         st.rerun()
+
+
+def _levels_form(db, group):
+    """Move a group's stoploss / target from here, and re-arm it on save.
+
+    A basket that has hit its level is the moment you most want to change one —
+    take the target up because the trend has further to run, or pull the
+    stoploss in to lock what is left. Doing that from the card you are already
+    looking at saves a trip to Group Management, and saving re-arms in the same
+    move: a triggered group that stayed triggered would go on ignoring the new
+    level, which is not what anyone means by changing it.
+    """
+    triggered = group.status == G.TRIGGERED
+    verb = "Save & re-arm" if group.status != G.DEPLOYED else "Save levels"
+
+    with st.expander("🎯 Stoploss / target", expanded=triggered):
+        if triggered:
+            st.caption("This group has hit a level and stopped being monitored. "
+                       "Set new ones and it starts again from here.")
+        with st.form(f"ztrade_dlg_levels_{group.id}"):
+            c1, c2 = st.columns(2)
+            stoploss = c1.number_input(
+                "Stoploss (₹)", value=group.stoploss, step=500.0, format="%.2f",
+                key=f"ztrade_dlgsl_{group.id}",
+                help="Fires when P&L falls below this. Leave blank to disarm "
+                     "that side; a positive value is a profit floor.")
+            target = c2.number_input(
+                "Target (₹)", value=group.target, step=500.0, format="%.2f",
+                key=f"ztrade_dlgtg_{group.id}",
+                help="Fires when P&L rises above this. Leave blank to disarm "
+                     "that side.")
+            if st.form_submit_button(verb, type="primary", width='stretch'):
+                _save_levels(db, group, stoploss, target)
+
+
+def _save_levels(db, group, stoploss, target):
+    """Persist new levels and, unless it is already armed, arm the group."""
+    _, err = G.update_group(db, group, stoploss=stoploss, target=target)
+    if err:
+        st.error(err)
+        return
+
+    # Already deployed: it keeps running against the new levels, and its
+    # deploy-time baseline stays the one it was armed with. Only a group that is
+    # not currently monitored gets armed — which re-takes that baseline.
+    live_map = P.snapshot_maps(db).get(group.user_id, {})
+
+    # Where the P&L already sits against the level just set. Re-arming into a
+    # level the group is already past is legitimate — but it fires again on the
+    # next poll, so say so rather than let the alert look like a bug.
+    breach, _ = G.evaluate(group, G.mark_group(db, group, live_map)['pnl'])
+
+    if group.status == G.DEPLOYED:
+        H.flash('success', f"Levels updated — '{group.name}' stays armed.")
+    else:
+        ok, deploy_err = G.deploy(
+            db, group,
+            H.lot_sizes(db, [leg.tradingsymbol for leg in G.legs_of(db, group.id)]),
+            baseline=H.deploy_baseline(db, group, live_map),
+            live_map=live_map,
+        )
+        if not ok:
+            st.error(deploy_err)
+            return
+        H.flash('success', f"'{group.name}' re-armed — monitoring again from now.")
+
+    if breach:
+        H.flash('warning',
+                f"⚠️ '{group.name}' is already past its "
+                f"{'target' if breach == G.TARGET else 'stoploss'} — it will trigger "
+                f"again on the next poll. Move the level further out to keep it "
+                f"running.")
+
+    note = G.levels_imbalance(group.stoploss, group.target)
+    if note:
+        H.flash('warning', f"⚠️ '{group.name}': {note}")
+    # A full rerun repaints the dialog's header with the new levels and status;
+    # the flash carries the outcome across it.
+    st.rerun()
 
 
 @st.fragment(run_every=H.LIVE_SECONDS)

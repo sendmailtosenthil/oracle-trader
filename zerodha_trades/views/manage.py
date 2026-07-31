@@ -14,7 +14,6 @@ import streamlit as st
 from common import broker as B
 from common import permissions as ACL   # `P` is taken by positions in this module
 from zerodha_trades.services import groups as G
-from zerodha_trades.services import payoff as PO
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
 
@@ -116,8 +115,11 @@ def _account_tab(db, user_id, book, lot_map):
     # Closed positions are shown and taggable: a group formed around legs
     # that have since been squared off still needs to carry their P&L.
 
-    unresolved = sorted({p['tradingsymbol'] for p in live
-                         if not lot_map.get(p['tradingsymbol'])})
+    # Only open positions care: a closed one is a settled figure, so its lot size
+    # is never checked and an expired contract that no longer resolves is not a
+    # problem to report.
+    unresolved = sorted({p['tradingsymbol'] for p in open_positions
+                         if p['quantity'] and not lot_map.get(p['tradingsymbol'])})
     if unresolved:
         st.warning(
             "⚠️ Couldn't look up the lot size for "
@@ -557,36 +559,14 @@ def _add_positions(db, group, positions, lot_map):
         st.rerun()
 
 
-def _deploy_baseline(db, group, live_map):
-    """The expected range as it stands right now, to freeze against this arming.
-
-    Best-effort by design: an underlying that cannot be priced, or a group with
-    no option quote to imply a vol from, simply deploys without a reference band
-    on its chart. Refusing to deploy over a missing chart annotation would be
-    the wrong trade-off entirely.
-    """
-    legs = G.mark_group(db, group, live_map)['legs']
-    contracts = H.contracts(db, [item['leg'].tradingsymbol for item in legs])
-    names = PO.underlyings(legs, contracts)
-    if not names:
-        return None
-    spot, _ = H.underlying_spot(db, legs, contracts, names[0])
-    if not spot:
-        return None
-    probe = PO.build(legs, contracts, spot, underlying=names[0], points=2)
-    if not probe or not probe['sigma']:
-        return None
-    return {'spot': spot, 'sigma': probe['sigma'], 'iv': probe['atm_iv']}
-
-
 def _lifecycle_bar(db, group, live_map, lot_map):
     st.divider()
     c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
     if group.status == G.DRAFT:
         if c1.button("🚀 Deploy", key=f"ztrade_dep_{group.id}", type="primary",
                      width='stretch'):
-            ok, err = G.deploy(db, group, lot_map,
-                               baseline=_deploy_baseline(db, group, live_map))
+            ok, err = G.deploy(db, group, lot_map, live_map=live_map,
+                               baseline=H.deploy_baseline(db, group, live_map))
             if ok:
                 H.flash('success', f"'{group.name}' deployed — now monitored.")
                 if not G.has_baseline(group):

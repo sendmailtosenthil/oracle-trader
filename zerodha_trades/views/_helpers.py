@@ -4,6 +4,7 @@ import datetime
 import pytz
 import streamlit as st
 
+from zerodha_trades.services import groups
 from zerodha_trades.services import payoff
 from zerodha_trades.services import positions
 
@@ -241,3 +242,25 @@ def underlying_spot(db, items, contracts, name):
     if price:
         return price, f"{name} last traded"
     return payoff.spot_from_book(items, contracts, name)
+
+
+def deploy_baseline(db, group, live_map):
+    """The expected range as it stands right now, to freeze against this arming.
+
+    Best-effort by design: an underlying that cannot be priced, or a group with
+    no option quote to imply a vol from, simply deploys without a reference band
+    on its chart. Refusing to deploy over a missing chart annotation would be
+    the wrong trade-off entirely.
+    """
+    legs = groups.mark_group(db, group, live_map)['legs']
+    detail = contracts(db, [item['leg'].tradingsymbol for item in legs])
+    names = payoff.underlyings(legs, detail)
+    if not names:
+        return None
+    spot, _ = underlying_spot(db, legs, detail, names[0])
+    if not spot:
+        return None
+    probe = payoff.build(legs, detail, spot, underlying=names[0], points=2)
+    if not probe or not probe['sigma']:
+        return None
+    return {'spot': spot, 'sigma': probe['sigma'], 'iv': probe['atm_iv']}

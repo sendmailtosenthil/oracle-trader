@@ -243,9 +243,11 @@ def delete_group(db, group):
 def add_leg(db, group, position, quantity=None, lot_size=None):
     """Tag a position (or a slice of it) into a group. Returns ``(leg, error)``.
 
-    ``quantity`` defaults to the position's full quantity. It must be non-zero,
-    point the same way as the position, not exceed it in magnitude, and — for
-    derivatives — be a whole number of lots.
+    ``quantity`` defaults to the position's full quantity. On an *open* position
+    it must be non-zero, point the same way, not exceed it in magnitude, and —
+    for derivatives — be a whole number of lots. A *closed* one is only ever a
+    settled figure, so the lot rules don't apply to it (see
+    :func:`validate_leg_quantity`).
     """
     # A closed position is still taggable: it keeps its settled P&L in the
     # group. Validate against the size it had rather than today's zero.
@@ -254,7 +256,8 @@ def add_leg(db, group, position, quantity=None, lot_size=None):
         return None, (f"{position['tradingsymbol']}: can't tell what size this "
                       f"position was — nothing to add.")
     qty = pos_qty if quantity is None else int(quantity)
-    err = validate_leg_quantity(qty, pos_qty, position['tradingsymbol'], lot_size)
+    err = validate_leg_quantity(qty, pos_qty, position['tradingsymbol'], lot_size,
+                               closed=not int(position.get('quantity') or 0))
     if err:
         return None, err
 
@@ -286,13 +289,19 @@ def add_leg(db, group, position, quantity=None, lot_size=None):
     return leg, None
 
 
-def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
+def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None, closed=False):
     """Leg quantity must be non-zero, same-signed, and within the position.
 
-    It must also be a whole number of lots. An unresolved ``lot_size`` is a
-    *failure*, not a free pass: without it the whole-lot rule cannot be checked,
-    and letting the quantity through unchecked is exactly how a bad one reaches
-    a deployed group.
+    On an open position it must also be a whole number of lots, and an
+    unresolved ``lot_size`` is a *failure*, not a free pass: without it the
+    whole-lot rule cannot be checked, and letting the quantity through unchecked
+    is exactly how a bad one reaches a deployed group.
+
+    ``closed`` drops both of those. A settled leg is a rupee figure and nothing
+    more — its contract may have expired and its lot size may no longer resolve,
+    neither of which changes what it made. The sign and magnitude checks stay,
+    because they are about the closed trade's own size (what its P&L is
+    pro-rated against), not about anything the broker is still reporting.
     """
     if qty == 0:
         return f"{symbol}: quantity cannot be 0."
@@ -303,6 +312,8 @@ def validate_leg_quantity(qty, pos_qty, symbol, lot_size=None):
     if abs(qty) > abs(pos_qty):
         return (f"{symbol}: group quantity {qty} exceeds the position quantity "
                 f"{pos_qty}.")
+    if closed:
+        return None
     if not lot_size:
         return lot_size_unavailable(symbol)
     # A one-lot position has exactly one legal quantity, so say that outright
@@ -337,11 +348,17 @@ def validate_lot_multiple(qty, symbol, lot_size):
 
 
 def set_leg_quantity(db, leg, quantity, live_map=None, lot_size=None):
-    """Change a leg's quantity, validated against the live position if known."""
+    """Change a leg's quantity, validated against the live position if known.
+
+    A closed leg skips the lot rules: it holds a settled figure, so there is no
+    live position for the quantity to be legal against and no reason to need its
+    contract to still resolve.
+    """
     qty = int(quantity)
     live = (live_map or {}).get((leg.tradingsymbol, leg.product))
+    closed = leg_state(live) == CLOSED
     basis = int(live['quantity']) if live and live['quantity'] else leg.source_quantity
-    err = validate_leg_quantity(qty, basis, leg.tradingsymbol, lot_size)
+    err = validate_leg_quantity(qty, basis, leg.tradingsymbol, lot_size, closed=closed)
     if err:
         return err
     leg.quantity = qty
@@ -711,12 +728,18 @@ def accounts_with_groups(db):
 
 
 # ----- lifecycle ---------------------------------------------------------
-def deploy(db, group, lot_sizes=None, baseline=None):
+def deploy(db, group, lot_sizes=None, baseline=None, live_map=None):
     """Arm a group for monitoring. Returns ``(ok, error)``.
 
-    Re-checks every leg's quantity rather than trusting what was stored: a leg
-    saved before the whole-lot rule existed, or while the lot size could not be
-    resolved, must not slip into a monitored group.
+    Re-checks every *open* leg's quantity rather than trusting what was stored: a
+    leg saved before the whole-lot rule existed, or while the lot size could not
+    be resolved, must not slip into a monitored group.
+
+    Closed legs are exempt. One holds a settled rupee figure; its contract may
+    have expired and its lot size may no longer resolve, neither of which changes
+    what it made. Validating it would strand the group — a triggered basket whose
+    legs have since been squared off could never be re-armed with new levels,
+    which is precisely when you want to.
 
     ``baseline`` is ``{'spot', 'sigma', 'iv'}`` as of now — where the underlying
     stood and how far the market implied it could travel before the front
@@ -734,11 +757,15 @@ def deploy(db, group, lot_sizes=None, baseline=None):
     if err:
         return False, err
 
+    # No live book means nothing can be verified against it, so nothing is
+    # rejected on its account — the same stance as a closed leg.
+    book = live_map or {}
     problems = [
         p for p in (
             validate_lot_multiple(leg.quantity, leg.tradingsymbol,
                                   (lot_sizes or {}).get(leg.tradingsymbol))
             for leg in legs
+            if leg_state(book.get((leg.tradingsymbol, leg.product))) == OPEN
         ) if p
     ]
     if problems:
