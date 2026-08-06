@@ -179,13 +179,23 @@ def _card(mark):
             st.rerun()   # full rerun: the dialog is rendered by the main body
 
 
+def _close_dialog(group_id=None):
+    """Forget which dialog is open, and any half-armed confirmation inside it.
+
+    A confirmation left armed would greet the user mid-prompt the next time they
+    opened that card, so it dies with the dialog.
+    """
+    open_id = st.session_state.pop(OPEN_DIALOG, None)
+    st.session_state.pop(f"_ztrade_confirm_del_{group_id or open_id}", None)
+
+
 def _forget_dialog():
     """Clear the open-dialog flag when the user dismisses via the X or Esc.
 
     Without this the flag survives the dismissal and the next full rerun — the
     poller-bar Save, say — would pop the dialog straight back open.
     """
-    st.session_state.pop(OPEN_DIALOG, None)
+    _close_dialog()
 
 
 @st.dialog("Group positions", width="large", on_dismiss=_forget_dialog)
@@ -213,10 +223,45 @@ def _positions_dialog(db, group):
     if G.can_edit_group(group):
         _levels_form(db, group)
 
-    # Outside the fragment on purpose: Close needs a full rerun to tear the
-    # dialog down, which a fragment-scoped rerun would not give it.
-    if st.button("Close", key=f"ztrade_dlgclose_{group.id}"):
-        st.session_state.pop(OPEN_DIALOG, None)
+    # Outside the fragment on purpose: these need a full rerun to tear the
+    # dialog down, which a fragment-scoped rerun would not give.
+    left, right = st.columns([1, 3])
+    if left.button("Close", key=f"ztrade_dlgclose_{group.id}"):
+        _close_dialog()
+        st.rerun()
+    if G.can_edit_group(group):
+        with right:
+            _delete_control(db, group)
+
+
+def _delete_control(db, group):
+    """Delete this group, behind a confirmation, then shut the dialog.
+
+    Owners only — the same rule as editing, since sharing is read-only. Deleting
+    drops the group and its legs; it never touches the broker, so the positions
+    themselves are untouched and can be regrouped afterwards.
+    """
+    confirm_key = f"_ztrade_confirm_del_{group.id}"
+
+    if not st.session_state.get(confirm_key):
+        if st.button("🗑 Delete group", key=f"ztrade_del_{group.id}"):
+            st.session_state[confirm_key] = True
+            st.rerun()
+        return
+
+    st.warning(f"Delete **{group.name}** and its "
+               f"{len(G.legs_of(db, group.id))} tagged position(s)? The positions "
+               f"themselves are not touched — only this grouping. Can't be undone.")
+    yes, no = st.columns(2)
+    if yes.button("Yes, delete", key=f"ztrade_delyes_{group.id}", type="primary"):
+        name = group.name
+        G.delete_group(db, group)
+        st.session_state.pop(confirm_key, None)
+        _close_dialog()
+        H.flash('success', f"Deleted '{name}'.")
+        st.rerun()
+    if no.button("Cancel", key=f"ztrade_delno_{group.id}"):
+        st.session_state.pop(confirm_key, None)
         st.rerun()
 
 
