@@ -15,10 +15,17 @@ open the same one again and both count.
 Triggers are absolute rupee levels on that P&L: ``target`` is the upper bound
 and ``stoploss`` the lower one. Both may be positive or negative, so a positive
 stoploss works as a profit floor.
+
+A group says who owns those two levels through ``levels_mode``. ``fixed`` is the
+original behaviour — the user types them and nothing else touches them. ``auto``
+hands them to the app, which manages them from the premium the basket was opened
+for; see "automatic levels" below.
 """
 import datetime
+import math
 
-from common.database import TradeGroup, TradeGroupLeg, TradeGroupSetting
+from common.database import (TradeGroup, TradeGroupLeg, TradeGroupLevelEvent,
+                             TradeGroupSetting)
 
 DRAFT = 'draft'
 DEPLOYED = 'deployed'
@@ -26,6 +33,25 @@ TRIGGERED = 'triggered'
 
 TARGET = 'TARGET'
 STOPLOSS = 'STOPLOSS'
+
+FIXED = 'fixed'
+AUTO = 'auto'
+LEVELS_MODES = (FIXED, AUTO)
+MODE_LABELS = {FIXED: "Fixed SL & target", AUTO: "Auto-adjust SL & target"}
+
+
+def levels_mode_of(group):
+    """A group's levels mode, defaulting to ``fixed``.
+
+    Read through a helper rather than off the column: every group that predates
+    the mode has NULL there, and those were all typed by hand.
+    """
+    mode = (getattr(group, 'levels_mode', None) or '').strip().lower()
+    return mode if mode in LEVELS_MODES else FIXED
+
+
+def is_auto(group):
+    return levels_mode_of(group) == AUTO
 
 
 # ----- settings ----------------------------------------------------------
@@ -99,7 +125,7 @@ def legs_of(db, group_id):
 
 
 def create_group(db, name, user_id, stoploss=None, target=None, channels=None,
-                 owner=None, shared=False):
+                 owner=None, shared=False, levels_mode=FIXED, threshold=None):
     """Create a draft group on Zerodha account ``user_id``. Returns ``(group, error)``.
 
     ``channels`` is the notification channels to use (see
@@ -109,12 +135,22 @@ def create_group(db, name, user_id, stoploss=None, target=None, channels=None,
     ``owner`` is the *app* user creating it — distinct from ``user_id``, which
     is the Kite login the positions belong to. ``shared`` opens the group up for
     other users to view; it never lets them edit.
+
+    ``levels_mode`` decides who owns the levels. On ``auto`` any ``stoploss`` /
+    ``target`` passed in is ignored rather than kept: the group's levels are
+    derived, so a typed one would be overwritten on the next recompute and is
+    better refused outright than silently honoured for a while. ``threshold`` is
+    the smallest stoploss step auto mode will take, defaulting to
+    :data:`DEFAULT_THRESHOLD`.
     """
     name = (name or '').strip()
     if not name:
         return None, "Group name is required."
     if not user_id:
         return None, "A group must belong to a Zerodha account."
+    mode = levels_mode if levels_mode in LEVELS_MODES else FIXED
+    if mode == AUTO:
+        stoploss = target = None
     clash = db.query(TradeGroup).filter(TradeGroup.name == name).first()
     if clash:
         # Names are unique across accounts, so say which one already has it
@@ -124,13 +160,485 @@ def create_group(db, name, user_id, stoploss=None, target=None, channels=None,
     err = validate_levels(stoploss, target)
     if err:
         return None, err
+    if threshold is not None and float(threshold) <= 0:
+        return None, "The stoploss step must be more than ₹0."
     group = TradeGroup(name=name, user_id=user_id, stoploss=stoploss,
-                       target=target, status=DRAFT, owner=owner,
-                       shared=bool(shared))
+                       target=target, levels_mode=mode, status=DRAFT, owner=owner,
+                       shared=bool(shared),
+                       auto_threshold=(float(threshold) if threshold
+                                       else DEFAULT_THRESHOLD))
     apply_channels(group, ALL_CHANNELS if channels is None else channels)
     db.add(group)
     db.commit()
+    refresh_auto_levels(db, group)
     return group, None
+
+
+# ----- automatic levels ---------------------------------------------------
+# An auto group manages its own levels from a single figure: the profit the
+# basket makes if every contract expires worthless — the premium it was opened
+# for, priced from the legs as they were tagged. Call it E.
+#
+#   opening stoploss   -E, rounded to the rupee. The whole premium is what the
+#                      trade is risking to keep half of it.
+#   opening target      50% of E.
+#   the ratchet         each tick, the stoploss rises by whatever the P&L has
+#                      gained since the stoploss was last set — but only once
+#                      that step is worth at least `threshold` rupees, so the
+#                      level moves in meaningful jumps instead of every tick.
+#                      It only ever goes up, and is recorded when it does.
+#   target reached      notify on every channel, drop the stoploss to break-even
+#                      (0), and move the target up the ladder — 50%, then 70%,
+#                      then 85% of E. Reaching the last rung ends the ladder and
+#                      advises closing the trade; the ratcheting stoploss is the
+#                      only exit left for anyone who holds on.
+#   legs change         a leg closing fixes its result and a new leg brings its
+#                      own premium, so E is re-priced (see :func:`_refit_basis`)
+#                      and the target re-derived at the rung the group is on. The
+#                      stoploss takes the new opening level only if it tightens.
+#
+# Typing over either level takes the group off automatic entirely: it becomes a
+# fixed-levels group and nothing derived touches it again. That is a mode change,
+# not an exception to the rules below — see :func:`update_group`.
+#
+# Two invariants hold for as long as a group stays armed:
+#
+#   the risk at the stoploss only ever falls.  The level moves up and never
+#       down — a loss of one premium becomes a smaller loss, then break-even,
+#       then a locked-in profit. Enforced in one place,
+#       :func:`tighten_stoploss`, which is the only writer of an automatic stop,
+#       so no caller can loosen one by forgetting to check.
+#   stoploss <= auto_anchor_pnl.  The level never passes the profit that set it,
+#       so an adjustment cannot stop the group out on the tick it happens.
+#
+# The one place a *wider* stoploss appears is arming: deploying (or re-arming)
+# derives a fresh opening level from the legs, because that is a new commitment
+# by the user — to a basket whose legs may have changed while it sat in draft,
+# and, after a stop-out, on a level that has already fired and would fire again.
+# That reset is recorded like everything else, so it is visible rather than
+# silent.
+#
+# Every move is written to ztrade_group_level_events, which is the stoploss
+# journey the dashboard draws.
+
+# Smallest stoploss step worth taking, in rupees. Per group, because it is a
+# judgement about that basket's size, not a property of the market.
+DEFAULT_THRESHOLD = 300.0
+
+# Targets, as fractions of the expected profit, in the order they are taken.
+# Reaching the last one is as far as the ladder goes: what follows is advice to
+# close the trade, because holding for the final slice of a premium risks the
+# whole of what the ladder has already earned.
+TARGET_FRACTIONS = (0.5, 0.7, 0.85)
+
+# Level-event kinds. `armed` opens a journey and `disarmed` closes it, so a
+# group deployed twice reads as two journeys rather than one confusing line.
+ARMED = 'armed'
+SL_ADJUSTED = 'sl_adjusted'
+TARGET_REACHED = 'target_reached'
+BASIS_CHANGED = 'basis_changed'
+MANUAL = 'manual'
+DISARMED = 'disarmed'
+
+
+def threshold_of(group):
+    """The smallest stoploss step this group will take, in rupees."""
+    value = getattr(group, 'auto_threshold', None)
+    return float(value) if value else DEFAULT_THRESHOLD
+
+
+def is_option_symbol(symbol):
+    """True for an NFO/BFO option contract, told by its CE/PE suffix.
+
+    Suffix rather than the instruments master on purpose: this is needed inside
+    the poller, which deliberately never loads the instruments dump — it is the
+    single biggest thing that would cost the VPS memory on every cycle.
+    """
+    return (symbol or '').upper().endswith(('CE', 'PE'))
+
+
+def premium_of(leg):
+    """What one leg was opened for, positive when premium was received.
+
+    A short leg carries a negative quantity, so ``-quantity * avg_price`` is the
+    credit taken in; a long leg comes out negative, the debit paid.
+    """
+    return -leg.quantity * float(leg.avg_price or 0.0)
+
+
+def auto_basis(db, group, live_map=None):
+    """``(expected_profit, problem)`` — the figure every auto level derives from.
+
+    A leg contributes what it is *expected to be worth on expiry day*, and that
+    depends on whether it is still running:
+
+    * **open** — its premium. What the leg keeps if the contract expires
+      worthless, priced at the average the leg was tagged at.
+    * **closed** — its settled P&L. The position is gone, so its result is a
+      fixed rupee figure and no longer an expectation at all. A leg closed at a
+      loss therefore *reduces* what the group can still make, which is exactly
+      what the levels should be measured against.
+
+    So the basis is not a constant for the life of a group: closing a leg or
+    tagging another one moves it, and :func:`_refit_basis` re-prices the levels
+    when it does.
+
+    ``live_map`` is the position book to judge open/closed against; without one
+    the poller's snapshot is read, so a caller with no book of its own still gets
+    the right answer rather than a stale guess. With a book in hand a *missing*
+    row means the leg is closed — Kite drops a squared-off position. With no book
+    at all it means nothing, and a leg counts as it was tagged: writing a live
+    trade off as closed would price the basis off a book nobody has looked at.
+
+    A ``problem`` string means the basis cannot be established, and says why in
+    words the UI can show as-is:
+
+    * no legs yet — nothing has been traded to expect a profit from;
+    * an open leg that is not an option, where premium says nothing about an
+      expiry value (a future's ``quantity * price`` is notional, not a credit);
+    * nothing left to keep — the open premium and the settled results net out to
+      zero or a debit, which has no profit to take fractions of.
+    """
+    legs = legs_of(db, group.id)
+    if not legs:
+        return None, ("no positions tagged yet — automatic levels come from the "
+                      "premium of the trades in the group.")
+    book = live_map if live_map is not None else _snapshot_book(db, group)
+    running, settled = [], []
+    for leg in legs:
+        live = book.get((leg.tradingsymbol, leg.product))
+        (settled if _basis_closed(leg, live, bool(book)) else running).append(
+            (leg, live))
+
+    # Only the open legs need to be options: a closed one contributes rupees, and
+    # what kind of contract earned them no longer matters.
+    others = sorted({leg.tradingsymbol for leg, _ in running
+                     if not is_option_symbol(leg.tradingsymbol)})
+    if others:
+        return None, (f"{', '.join(others[:3])} is not an option, so this group has "
+                      f"no expiry premium to work from. Use fixed levels for it.")
+    # To the paisa: prices carry two decimals, and float noise a thousandth of a
+    # rupee wide would otherwise cost a whole rupee when the stoploss is floored.
+    expected = round(sum(premium_of(leg) for leg, _ in running)
+                     + sum(leg_settled(leg, live) for leg, live in settled), 2)
+    if expected <= 0:
+        return None, (f"the open premium and the closed legs net out to "
+                      f"₹{expected:,.2f}, so there is nothing left to keep. Use "
+                      f"fixed levels for it.")
+    return expected, None
+
+
+def _basis_closed(leg, live, have_book):
+    """Whether the basis should treat this leg as a settled rupee figure.
+
+    A live row decides it outright. Without one it comes down to whether there is
+    a book to be missing from: inside a real book a dropped row *is* the closure,
+    but with nothing polled for the account the leg is only closed if it has
+    actually banked a cycle — otherwise every leg of a fresh draft group would be
+    written off as closed and the group would look like it had nothing to make.
+    """
+    if live is not None:
+        return leg_state(live) == CLOSED
+    if have_book:
+        return True
+    return (int(getattr(leg, 'cycles', 0) or 0) > 0
+            or getattr(leg, 'settled_override', None) is not None)
+
+
+def _snapshot_book(db, group):
+    """The poller's last position book for a group's account.
+
+    Imported inside the call, like the other cross-service reach in this module:
+    it keeps the marking core importable on its own, which is what lets the payoff
+    maths depend on it without dragging the broker client in.
+    """
+    from zerodha_trades.services import positions
+    return positions.snapshot_maps(db).get(group.user_id, {})
+
+
+def auto_levels(db, group, live_map=None):
+    """The opening levels for an auto group, as ``(stoploss, target, expected)``.
+
+    All three are ``None`` when the basis cannot be established. The stoploss is
+    rounded *down* to the rupee (a wider stop, never a tighter one) and the target
+    to the nearest rupee.
+    """
+    expected, problem = auto_basis(db, group, live_map)
+    if problem:
+        return None, None, None
+    return (float(math.floor(-expected)),
+            float(round(TARGET_FRACTIONS[0] * expected)),
+            float(expected))
+
+
+def refresh_auto_levels(db, group, live_map=None, commit=True, force=False):
+    """Re-derive an auto group's opening levels. Returns whether anything moved.
+
+    Only while the group is *not* armed. A deployed group is running a journey:
+    its stoploss has been ratcheted, its target may have been taken, and both are
+    now facts about the trade rather than a function of the legs — so adding a leg
+    to a live group does not rebase them. Arming, re-arming and undeploying all go
+    through here, which is where a fresh journey starts from the legs as they are.
+
+    ``force`` is for the one case that is a fresh start without a status change:
+    a group switched from fixed to auto while it is deployed.
+
+    A no-op on a fixed group: those levels are the user's, and nothing derived
+    may overwrite them.
+    """
+    if not is_auto(group):
+        return False
+    if group.status == DEPLOYED and not force:
+        return False
+    stoploss, target, expected = auto_levels(db, group, live_map)
+    before = (group.stoploss, group.target, group.auto_expected_profit)
+    group.stoploss = stoploss
+    group.target = target
+    group.auto_expected_profit = expected
+    group.auto_anchor_pnl = 0.0      # the opening stop was set at zero profit
+    group.auto_target_stage = 0
+    if commit:
+        db.commit()
+    return before != (stoploss, target, expected)
+
+
+def next_target(group, stage):
+    """The target for a group that has reached ``stage`` targets, or ``None``.
+
+    ``None`` once every fraction has been taken: the ladder ends there, and what
+    follows is advice to close rather than another level.
+    """
+    expected = getattr(group, 'auto_expected_profit', None)
+    if expected is None or stage >= len(TARGET_FRACTIONS):
+        return None
+    return float(round(TARGET_FRACTIONS[stage] * float(expected)))
+
+
+CLOSE_ADVICE = ("🏁 Close the trade — every target has been reached and what is "
+                "left of the premium is not worth the profit already made.")
+
+
+def all_targets_taken(group):
+    """True once an auto group has climbed the whole ladder."""
+    return (is_auto(group)
+            and int(getattr(group, 'auto_target_stage', 0) or 0) >= len(TARGET_FRACTIONS))
+
+
+def target_label(group):
+    """Which target an auto group is working toward, e.g. ``"50% of ₹12,000"``."""
+    stage = int(getattr(group, 'auto_target_stage', 0) or 0)
+    expected = getattr(group, 'auto_expected_profit', None)
+    if expected is None:
+        return "no expected profit established"
+    if stage >= len(TARGET_FRACTIONS):
+        return (f"all {len(TARGET_FRACTIONS)} targets taken "
+                f"({TARGET_FRACTIONS[-1] * 100:.0f}% of ₹{expected:,.2f}) — "
+                f"closing the trade is advised; the trailing stoploss is the only "
+                f"exit left")
+    return (f"{TARGET_FRACTIONS[stage] * 100:.0f}% of the ₹{expected:,.2f} "
+            f"expected profit")
+
+
+# ----- the level journey --------------------------------------------------
+def record_level_event(db, group, kind, pnl=None, note=None, at=None,
+                       commit=False):
+    """Append one row to a group's level history.
+
+    Left uncommitted by default: the poller lands a whole cycle — snapshots,
+    banking, marks and these — in one transaction, so a crash cannot record a
+    level that was never actually set.
+    """
+    event = TradeGroupLevelEvent(
+        group_id=group.id,
+        at=at or datetime.datetime.utcnow(),
+        kind=kind,
+        stoploss=group.stoploss,
+        target=group.target,
+        pnl=pnl,
+        expected_profit=getattr(group, 'auto_expected_profit', None),
+        note=note,
+    )
+    db.add(event)
+    if commit:
+        db.commit()
+    return event
+
+
+def level_events(db, group_id, limit=None):
+    """A group's level history, oldest first."""
+    query = (db.query(TradeGroupLevelEvent)
+             .filter(TradeGroupLevelEvent.group_id == group_id)
+             .order_by(TradeGroupLevelEvent.at.asc(),
+                       TradeGroupLevelEvent.id.asc()))
+    if limit:
+        # The tail is the interesting end, so take the last N and re-order.
+        rows = (query.order_by(None)
+                .order_by(TradeGroupLevelEvent.at.desc(),
+                          TradeGroupLevelEvent.id.desc())
+                .limit(limit).all())
+        return list(reversed(rows))
+    return query.all()
+
+
+def has_level_events(db, group_id):
+    """Whether a group has any recorded level history.
+
+    What the journey view is offered on, rather than the group being on auto right
+    now: a group taken over by hand keeps the history of how its levels got there,
+    and hiding it would lose the record at the moment it explains the most.
+    """
+    return (db.query(TradeGroupLevelEvent.id)
+            .filter(TradeGroupLevelEvent.group_id == group_id)
+            .first() is not None)
+
+
+def delete_level_events(db, group_id):
+    """Drop a group's level history. Called when the group itself goes."""
+    return (db.query(TradeGroupLevelEvent)
+            .filter(TradeGroupLevelEvent.group_id == group_id)
+            .delete())
+
+
+# ----- the ratchet -------------------------------------------------------
+def advance_auto(db, group, pnl, live_map=None, now=None):
+    """Move an armed auto group's levels for this tick.
+
+    Returns the notifications the caller owes, as ``[(trigger_type, message)]``.
+    Only a target earns one: the stoploss steps are bookkeeping, and a message
+    every few minutes as it trails would train the user to ignore the channel
+    that also carries the stop-out.
+
+    Writes are left uncommitted for the caller's transaction (see
+    :func:`record_level_event`).
+    """
+    if not is_auto(group) or group.status != DEPLOYED:
+        return []
+    now = now or datetime.datetime.utcnow()
+    # The basis first: a leg that closed or was added changes what this trade can
+    # still make, and both the target and the stop have to be measured against
+    # the new figure before this tick's step is worked out.
+    _refit_basis(db, group, pnl, live_map, now)
+    _ratchet_stoploss(db, group, pnl, now)
+    notify = []
+    # A loop, not an `if`: a tick that gaps straight through two rungs has reached
+    # both, and each is its own recorded event and its own alert.
+    while group.target is not None and pnl > group.target:
+        notify.append(_reach_target(db, group, pnl, now))
+    return notify
+
+
+def _refit_basis(db, group, pnl, live_map, now):
+    """Re-price the levels when the group's legs have changed under them.
+
+    A leg closing fixes its result, and a new leg brings its own premium, so the
+    expected profit moves. When it does:
+
+    * the **target** is re-derived at the rung the group has reached — the ladder
+      is a fraction of what the trade can make, so a bigger basket earns a bigger
+      target and a smaller one a smaller target;
+    * the **stoploss** is offered the new opening level, and takes it only if it
+      *tightens*. Adding legs widens that level, and a stop never goes backwards
+      — the risk this trade has already taken off the table stays off it.
+
+    The offered level is also capped at the current P&L, so a basis that has
+    collapsed cannot stop the group out by arithmetic on the tick it is
+    recalculated; the level sits at the P&L and any further loss trips it.
+    """
+    expected, problem = auto_basis(db, group, live_map)
+    if problem or expected is None:
+        return False
+    if group.auto_expected_profit is not None \
+            and abs(expected - float(group.auto_expected_profit)) < 0.005:
+        return False
+    was = group.auto_expected_profit
+    group.auto_expected_profit = expected
+    group.target = next_target(group, int(group.auto_target_stage or 0))
+    moved = tighten_stoploss(group, min(float(math.floor(-expected)),
+                                        float(math.floor(pnl))))
+    if moved:
+        group.auto_anchor_pnl = pnl
+    record_level_event(
+        db, group, BASIS_CHANGED, pnl=pnl, at=now,
+        note=(f"Trade legs changed — expected profit "
+              f"{'—' if was is None else f'₹{was:,.2f}'} → ₹{expected:,.2f}; "
+              f"target re-derived"
+              + ("; stoploss tightened" if moved else "; stoploss held")))
+    return True
+
+
+def tighten_stoploss(group, value):
+    """Move the stoploss to ``value`` — but only if that *reduces* what is at risk.
+
+    The single writer of an automatic stoploss, so the direction is a property of
+    the code rather than of every caller remembering it. A stop walks
+    ``-5,000 → -4,700 → -4,000 → 0 → 300 → 1,000``: each step gives up less of the
+    trade, and a level that would hand risk back is refused outright.
+    """
+    if value is None:
+        return False
+    if group.stoploss is not None and value <= group.stoploss:
+        return False
+    group.stoploss = float(value)
+    return True
+
+
+def _ratchet_stoploss(db, group, pnl, now):
+    """Lift the stoploss by what the P&L has gained since it was last set."""
+    if group.stoploss is None:
+        return False
+    gain = pnl - float(group.auto_anchor_pnl or 0.0)
+    # Rounded *down* to the rupee. Rounding up could put the level as much as 50
+    # paise above the profit that justified it, which would stop the group out on
+    # the very tick that moved the stop — the one outcome a trailing stop must
+    # never produce.
+    candidate = float(math.floor(group.stoploss + gain))
+    # The spec's own test: the step itself has to be worth taking. Measured after
+    # rounding, so a step that only clears the threshold before it waits for the
+    # next tick rather than landing short.
+    if candidate - group.stoploss < threshold_of(group):
+        return False
+    if group.target is not None and candidate >= group.target:
+        # The target is being reached on this same tick; leave the stop where it
+        # is and let :func:`_reach_target` place it, rather than push it above the
+        # level that is about to be taken.
+        return False
+    before = group.stoploss
+    if not tighten_stoploss(group, candidate):
+        return False
+    group.auto_anchor_pnl = pnl
+    record_level_event(db, group, SL_ADJUSTED, pnl=pnl, at=now,
+                       note=(f"Trailing step +₹{candidate - before:,.2f} "
+                             f"(₹{before:,.2f} → ₹{candidate:,.2f})"))
+    return True
+
+
+def _reach_target(db, group, pnl, now):
+    """Take a target: lock the stop at break-even, move the target on, notify."""
+    reached = group.target
+    stage = int(group.auto_target_stage or 0) + 1
+    # Break-even — which by the first target is a jump up from a stop still in
+    # loss. At a later target the ratchet already has it above zero, and
+    # :func:`tighten_stoploss` refuses to bring it back down: profit the trade has
+    # banked into the level is not handed back.
+    tighten_stoploss(group, 0.0)
+    group.auto_anchor_pnl = pnl
+    group.auto_target_stage = stage
+    group.target = next_target(group, stage)
+    if group.target is not None:
+        moved = (f"the target moves to ₹{group.target:,.2f} "
+                 f"({TARGET_FRACTIONS[stage] * 100:.0f}% of the expected profit).")
+    else:
+        moved = (f"That was the last rung of the ladder. {CLOSE_ADVICE} The "
+                 f"trailing stoploss is the only exit left if you hold on.")
+    message = (f"🎯 Target reached — P&L ₹{pnl:,.2f} has risen above the "
+               f"₹{reached:,.2f} target. Stoploss is now ₹{group.stoploss:,.2f} "
+               f"and {moved}")
+    record_level_event(
+        db, group, TARGET_REACHED, pnl=pnl, at=now,
+        note=(f"Target {stage} of {len(TARGET_FRACTIONS)} hit "
+              f"({TARGET_FRACTIONS[stage - 1] * 100:.0f}% = ₹{reached:,.2f})"
+              + ("" if group.target is not None else " — close advised")))
+    return TARGET, message
 
 
 def validate_levels(stoploss, target):
@@ -172,13 +680,44 @@ def levels_imbalance(stoploss, target, tolerance=LEVEL_BALANCE_TOLERANCE):
             "Check for a mistyped zero.")
 
 
+def levels_advisory(group):
+    """The lopsided-levels warning for a group, or ``None``.
+
+    Auto levels are lopsided by design — risk the whole premium to keep half of
+    it — so there is nothing to flag: the shape *is* the strategy, and warning
+    about it every save would be noise.
+    """
+    if is_auto(group):
+        return None
+    return levels_imbalance(group.stoploss, group.target)
+
+
 def update_group(db, group, name=None, stoploss=..., target=..., channels=None,
-                 shared=None):
+                 shared=None, levels_mode=None, threshold=None):
     """Patch a group's editable fields. Returns ``(group, error)``.
 
     ``stoploss`` / ``target`` use an ``...`` sentinel so ``None`` can be passed
-    explicitly to disarm that side. ``shared`` is left alone when ``None``.
+    explicitly to disarm that side. ``shared``, ``levels_mode`` and ``threshold``
+    are left alone when ``None``.
+
+    Switching to ``auto`` re-derives the levels: the ones it held were typed for a
+    fixed group, and keeping them would leave hand-set numbers armed under a label
+    promising computed ones. Switching to ``fixed`` — which is how a user takes an
+    automatic group over by hand — keeps whatever the levels currently are, so the
+    computed pair becomes the starting point for editing, and this call can pass
+    new ones in the same breath.
+
+    While a group *stays* on ``auto``, levels passed here are ignored rather than
+    written: they belong to the ratchet. Note "ignored", not "blanked" — an armed
+    group's levels are facts about a trade in flight, and clearing them would
+    disarm it in the middle.
     """
+    was = levels_mode_of(group)
+    mode = levels_mode if levels_mode in LEVELS_MODES else was
+    if mode == AUTO:
+        stoploss = target = ...
+    if threshold is not None and float(threshold) <= 0:
+        return group, "The stoploss step must be more than ₹0."
     new_sl = group.stoploss if stoploss is ... else stoploss
     new_tg = group.target if target is ... else target
     err = validate_levels(new_sl, new_tg)
@@ -198,13 +737,25 @@ def update_group(db, group, name=None, stoploss=..., target=..., channels=None,
                            + (f" under {clash.user_id}."
                               if clash.user_id != group.user_id else "."))
         group.name = name
+    group.levels_mode = mode
     group.stoploss = new_sl
     group.target = new_tg
+    if threshold is not None:
+        group.auto_threshold = float(threshold)
     if channels is not None:
         apply_channels(group, channels)
     if shared is not None:
         group.shared = bool(shared)
+    if was == AUTO and mode == FIXED:
+        # The hand-over is part of the trade's level history: the journey stops
+        # here, and the chart should show why it stops rather than simply end.
+        record_level_event(db, group, MANUAL, pnl=group.last_pnl,
+                           note="Levels set by hand — automatic adjustment off")
     db.commit()
+    # Turning auto on is the start of a journey even mid-flight, so it re-derives
+    # on a deployed group too — otherwise the switch would leave it armed with the
+    # levels it just discarded.
+    refresh_auto_levels(db, group, force=(mode == AUTO and was != AUTO))
     return group, None
 
 
@@ -234,7 +785,9 @@ def channels_of(group):
 
 
 def delete_group(db, group):
+    """Delete a group and everything recorded about it — legs and level history."""
     db.query(TradeGroupLeg).filter(TradeGroupLeg.group_id == group.id).delete()
+    delete_level_events(db, group.id)
     db.delete(group)
     db.commit()
 
@@ -286,6 +839,10 @@ def add_leg(db, group, position, quantity=None, lot_size=None):
     )
     db.add(leg)
     db.commit()
+    # The trades are what auto levels are derived from, so tagging one re-derives
+    # them — the "first stoploss is set from the trades added to the group" rule.
+    # A group already armed is left alone; see :func:`refresh_auto_levels`.
+    refresh_auto_levels(db, group)
     return leg, None
 
 
@@ -363,12 +920,15 @@ def set_leg_quantity(db, leg, quantity, live_map=None, lot_size=None):
         return err
     leg.quantity = qty
     db.commit()
+    refresh_auto_levels(db, get_group(db, leg.group_id))
     return None
 
 
 def remove_leg(db, leg):
+    group = get_group(db, leg.group_id)
     db.delete(leg)
     db.commit()
+    refresh_auto_levels(db, group)
 
 
 def allocation_map(db, exclude_group_id=None, user_id=None):
@@ -679,20 +1239,43 @@ def evaluate(group, pnl):
 
 
 def apply_marks(db, marks, on_trigger=None):
-    """Record marked P&L and fire any newly breached triggers.
+    """Record marked P&L, move automatic levels, and fire any breached triggers.
 
-    Called by the poller each cycle. Only deployed, alert-enabled groups can
-    trigger, and each fires once: the group flips to ``triggered`` and stamps
-    ``notified_at``, so a group sitting past its level does not re-alert every
-    ten seconds. Returns the list of groups that tripped on this pass.
+    Called by the poller each cycle. Three things happen to a deployed group:
+
+    1. its marked P&L is stored;
+    2. an auto group's levels advance — the stoploss trails, a reached target is
+       taken and moved on. This is level *management*, so it runs whether or not
+       the group notifies: "monitored but silent" silences the messages, not the
+       trailing stop;
+    3. a breached level triggers. Each group fires once: it flips to
+       ``triggered`` and stamps ``notified_at``, so one sitting past its level
+       does not re-alert every ten seconds.
+
+    An auto group's target is taken in step 2 and moved above the P&L there, so
+    step 3 only ever sees its stoploss — the escalation and the terminal trigger
+    cannot both fire on the same level.
+
+    Returns the groups that tripped on this pass; targets taken along the way are
+    notified but leave the group running.
     """
     now = datetime.datetime.utcnow()
-    fired = []
+    fired, taken = [], []
     for mark in marks:
         group, pnl = mark['group'], mark['pnl']
         group.last_pnl = pnl
         group.last_evaluated_at = now
-        if group.status != DEPLOYED or not group.alert_enabled:
+        if group.status != DEPLOYED:
+            continue
+        # The book this group was just marked against, so the basis can tell an
+        # open leg from a closed one without a second query.
+        book = {(item['leg'].tradingsymbol, item['leg'].product): item['live']
+                for item in mark['legs']}
+        for trigger_type, message in advance_auto(db, group, pnl, book, now):
+            if group.alert_enabled:
+                group.notified_at = now
+                taken.append((group, pnl, trigger_type, message))
+        if not group.alert_enabled:
             continue
         trigger_type, message = evaluate(group, pnl)
         if not trigger_type:
@@ -706,9 +1289,9 @@ def apply_marks(db, marks, on_trigger=None):
         fired.append((group, pnl, trigger_type, message))
     db.commit()
     # Notify only after the commit, so a slow or failing send cannot lose the
-    # fact that the group tripped.
+    # fact that the group tripped or that its levels moved.
     if on_trigger:
-        for group, pnl, trigger_type, message in fired:
+        for group, pnl, trigger_type, message in taken + fired:
             on_trigger(group, pnl, trigger_type, message)
     return [f[0] for f in fired]
 
@@ -751,7 +1334,14 @@ def deploy(db, group, lot_sizes=None, baseline=None, live_map=None):
     legs = legs_of(db, group.id)
     if not legs:
         return False, f"'{group.name}' has no positions — add at least one before deploying."
-    if group.stoploss is None and group.target is None:
+    if is_auto(group):
+        # An auto group is armed on levels derived from its legs, so a basket
+        # those cannot be derived from must not be armed at all — it would be
+        # monitored with nothing to trigger on.
+        _, problem = auto_basis(db, group, live_map)
+        if problem:
+            return False, f"Can't deploy '{group.name}' on automatic levels — {problem}"
+    elif group.stoploss is None and group.target is None:
         return False, f"'{group.name}' needs a stoploss or a target before deploying."
     err = validate_levels(group.stoploss, group.target)
     if err:
@@ -771,6 +1361,11 @@ def deploy(db, group, lot_sizes=None, baseline=None, live_map=None):
     if problems:
         return False, (f"Can't deploy '{group.name}' — "
                        + " ".join(problems))
+    # Arming starts an auto group's journey: opening levels taken from the legs as
+    # they stand at the moment the user commits to them, and the ratchet's anchor
+    # back at zero profit. Done after the checks above so a refused deploy has
+    # moved nothing.
+    refresh_auto_levels(db, group, live_map, commit=False)
     group.status = DEPLOYED
     group.deployed_at = datetime.datetime.utcnow()
     group.trigger_type = None
@@ -779,6 +1374,11 @@ def deploy(db, group, lot_sizes=None, baseline=None, live_map=None):
     group.triggered_pnl = None
     group.notified_at = None
     set_baseline(group, baseline)
+    if is_auto(group):
+        record_level_event(
+            db, group, ARMED,
+            note=(f"Armed on {len(legs)} leg(s) — expected profit "
+                  f"₹{group.auto_expected_profit or 0:,.2f}"))
     db.commit()
     return True, None
 
@@ -803,7 +1403,15 @@ def has_baseline(group):
 
 
 def undeploy(db, group):
-    """Return a group to draft, clearing any trigger state."""
+    """Return a group to draft, clearing any trigger state.
+
+    An auto group's journey ends here and is recorded as ending: the ratcheted
+    stoploss was a commitment to *this* arming, so the next deploy starts a fresh
+    one from the legs rather than resuming a stop set against a position that may
+    have changed while the group sat in draft. The history is kept — it is what
+    happened.
+    """
+    was_armed = is_auto(group) and group.status in (DEPLOYED, TRIGGERED)
     group.status = DRAFT
     group.trigger_type = None
     group.trigger_message = None
@@ -811,4 +1419,10 @@ def undeploy(db, group):
     group.triggered_pnl = None
     group.notified_at = None
     set_baseline(group, None)
+    if was_armed:
+        record_level_event(db, group, DISARMED, pnl=group.last_pnl,
+                           note="Undeployed — returned to draft")
     db.commit()
+    # Back in draft, so the opening levels are re-derived and shown as what the
+    # group would arm at next.
+    refresh_auto_levels(db, group)

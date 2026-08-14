@@ -77,6 +77,7 @@ venv/bin/python -m migrations.add_user_permissions        # logins -> per-page p
 venv/bin/python -m migrations.move_zerodha_credentials    # accounts -> owners + encrypted creds
 venv/bin/python -m migrations.add_settled_pnl             # leg P&L -> banked + live
 venv/bin/python -m migrations.add_group_baseline          # groups -> deploy-time SD reference
+venv/bin/python -m migrations.add_group_levels_mode       # groups -> fixed or automatic levels
 ```
 Existing logins become administrators, so nobody is locked out by the upgrade.
 
@@ -86,6 +87,23 @@ The payoff chart draws that frozen range in light grey behind the live one, so
 the gap between their centres is the drift since arming. Nothing is backfilled:
 a group deployed before the upgrade has no honest baseline available, and picks
 one up on its next redeploy.
+
+`add_group_levels_mode` makes the stoploss and target a choice rather than two
+boxes you must fill in. A group is either `fixed` — you type them, nothing else
+moves them — or `auto`, where creating it asks only for a name and the app manages
+the levels from the **expected profit**: the premium the open legs were sold for
+plus whatever the closed ones actually made. The opening stoploss is that whole
+figure and the opening target 50% of it; the stoploss then trails the profit in
+steps of at least ₹300 (per group) and never widens, and reaching a target
+notifies every channel, drops the stoploss to break-even and climbs the ladder
+50% → 70% → 85%, the last rung advising that the trade be closed. Closing a leg or
+adding one re-prices all of it. Typing over either level hands the group to you
+permanently — it becomes a fixed-levels group. Every move is recorded in the new
+`ztrade_group_level_events` table and drawn as the stoploss journey on the
+dashboard, and deleting a group deletes its history with it. Every existing group
+is backfilled to `fixed`, which is what it already was; groups deployed before the
+upgrade have no recorded journey to reconstruct and start one at their next
+arming.
 
 `add_settled_pnl` splits a trade leg's P&L into what closed cycles already made
 and what the position currently held is doing. That is what lets a contract be

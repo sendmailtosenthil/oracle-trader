@@ -14,6 +14,7 @@ from zerodha_trades import poller as PL
 from zerodha_trades.services import groups as G
 from zerodha_trades.services import positions as P
 from zerodha_trades.views import _helpers as H
+from zerodha_trades.views import journey_chart
 from zerodha_trades.views import payoff_chart
 
 PAGE = "ztrade.dashboard"
@@ -23,8 +24,9 @@ CARDS_PER_ROW = 3
 # Id of the group whose breakdown dialog is open, if any.
 OPEN_DIALOG = "_ztrade_open_dialog"
 
-# The two ways to read a group's book, inside the dialog.
-TABLE_VIEW, PAYOFF_VIEW = "📋 Table", "📈 Payoff"
+# The ways to read a group inside the dialog. The journey is offered only for a
+# group whose levels actually move — a fixed one's history is a straight line.
+TABLE_VIEW, PAYOFF_VIEW, JOURNEY_VIEW = "📋 Table", "📈 Payoff", "🪜 SL journey"
 
 
 def render(db):
@@ -154,14 +156,19 @@ def _card(mark):
 
         # Plain text rather than st.metric: at one-third page width the metric
         # font truncates a rupee figure to "-₹1…".
+        auto = "  ⚙️" if G.is_auto(group) else ""
         st.markdown(
             f"<div style='display:flex;justify-content:space-between;font-size:13px'>"
-            f"<span><span style='color:#888'>SL</span> "
+            f"<span><span style='color:#888'>SL{auto}</span> "
             f"<b>{H.money(group.stoploss)}</b></span>"
-            f"<span><span style='color:#888'>Target</span> "
+            f"<span><span style='color:#888'>Target{auto}</span> "
             f"<b>{H.money(group.target)}</b></span></div>",
             unsafe_allow_html=True,
         )
+        if G.all_targets_taken(group):
+            st.caption("🏁 Every target reached — closing the trade is advised.")
+        elif G.is_auto(group):
+            st.caption(f"⚙️ Auto · {G.target_label(group)}")
         _gauge_bar(group, pnl)
 
         if group.status == G.TRIGGERED and group.trigger_message:
@@ -207,8 +214,9 @@ def _positions_dialog(db, group):
     """
     st.markdown(f"**{group.name}**  `{group.user_id}`  "
                 f"{H.STATUS_BADGE.get(group.status, group.status)}"
-                f" &nbsp;·&nbsp; SL {H.money(group.stoploss)}"
-                f" &nbsp;·&nbsp; Target {H.money(group.target)}")
+                + (" &nbsp;·&nbsp; ⚙️ auto levels" if G.is_auto(group) else "")
+                + f" &nbsp;·&nbsp; SL {H.money(group.stoploss)}"
+                  f" &nbsp;·&nbsp; Target {H.money(group.target)}")
 
     if group.status == G.TRIGGERED and group.trigger_message:
         st.error(f"{group.trigger_message}  \n_{H.ist(group.triggered_at)} IST_")
@@ -277,33 +285,89 @@ def _levels_form(db, group):
     """
     triggered = group.status == G.TRIGGERED
     verb = "Save & re-arm" if group.status != G.DEPLOYED else "Save levels"
+    auto = G.is_auto(group)
 
-    with st.expander("🎯 Stoploss / target", expanded=triggered):
+    with st.expander("⚙️ Auto levels" if auto else "🎯 Stoploss / target",
+                     expanded=triggered):
         if triggered:
             st.caption("This group has hit a level and stopped being monitored. "
-                       "Set new ones and it starts again from here.")
+                       "Set new ones and it starts again from here."
+                       if not auto else
+                       "This group has hit a level and stopped being monitored. "
+                       "Re-arming recomputes its levels and starts it again.")
+        if auto:
+            st.caption(
+                f"Computed for this group — the stoploss trails in "
+                f"₹{G.threshold_of(group):,.2f} steps and it is working toward "
+                f"{G.target_label(group)}. See **{JOURNEY_VIEW}** for every move "
+                f"it has made. Type over either level and the group switches to "
+                f"fixed ones: your number stands and nothing adjusts it again."
+            )
+        if G.all_targets_taken(group):
+            st.warning(G.CLOSE_ADVICE)
         with st.form(f"ztrade_dlg_levels_{group.id}"):
             c1, c2 = st.columns(2)
+            # What was rendered, kept to tell a hand edit from the ratchet's own
+            # step landing between this paint and the submit (see _levels_edited).
+            shown_sl, shown_tg = group.stoploss, group.target
             stoploss = c1.number_input(
-                "Stoploss (₹)", value=group.stoploss, step=500.0, format="%.2f",
-                key=f"ztrade_dlgsl_{group.id}",
+                "Stoploss (₹)", value=shown_sl, step=500.0, format="%.2f",
+                key=H.level_key('ztrade_dlgsl_', group, shown_sl),
                 help="Fires when P&L falls below this. Leave blank to disarm "
                      "that side; a positive value is a profit floor.")
             target = c2.number_input(
-                "Target (₹)", value=group.target, step=500.0, format="%.2f",
-                key=f"ztrade_dlgtg_{group.id}",
+                "Target (₹)", value=shown_tg, step=500.0, format="%.2f",
+                key=H.level_key('ztrade_dlgtg_', group, shown_tg),
                 help="Fires when P&L rises above this. Leave blank to disarm "
                      "that side.")
             if st.form_submit_button(verb, type="primary", width='stretch'):
-                _save_levels(db, group, stoploss, target)
+                if not auto:
+                    _save_levels(db, group, stoploss, target)
+                elif _levels_edited(stoploss, target, shown_sl, shown_tg):
+                    _save_levels(db, group, stoploss, target, take_over=True)
+                else:
+                    # Nothing typed over: leave the levels to the ratchet, and let
+                    # the button do the other thing it is for — re-arming.
+                    _save_levels(db, group)
 
 
-def _save_levels(db, group, stoploss, target):
-    """Persist new levels and, unless it is already armed, arm the group."""
-    _, err = G.update_group(db, group, stoploss=stoploss, target=target)
+def _differs(typed, shown):
+    """True when a level box was actually changed. Either side may be blank."""
+    if typed is None and shown is None:
+        return False
+    if typed is None or shown is None:
+        return True
+    return abs(float(typed) - float(shown)) > 0.005
+
+
+def _levels_edited(typed_sl, typed_tg, shown_sl, shown_tg):
+    """True when the user typed over a level, judged against what was rendered.
+
+    An auto group's stoploss can step between the dialog painting and the form
+    being submitted, so comparing the submitted numbers with the group's *current*
+    ones would read the poller's own move as a hand edit and take the group off
+    automatic behind the user's back.
+    """
+    return _differs(typed_sl, shown_sl) or _differs(typed_tg, shown_tg)
+
+
+def _save_levels(db, group, stoploss=..., target=..., take_over=False):
+    """Persist new levels and, unless it is already armed, arm the group.
+
+    The `...` defaults are what an auto group re-arms with: it has no levels to
+    send from here, and passing ``None`` would blank the computed pair instead of
+    leaving it to be recomputed. ``take_over`` is a hand edit of an automatic
+    group, which moves it to fixed levels for good.
+    """
+    _, err = G.update_group(db, group, stoploss=stoploss, target=target,
+                            levels_mode=G.FIXED if take_over else None)
     if err:
         st.error(err)
         return
+    if take_over:
+        H.flash('info', f"'{group.name}' is now on fixed levels — your stoploss "
+                        f"and target stand, and nothing adjusts them. Hand them "
+                        f"back with **Auto-adjust** in Group Management.")
 
     # Already deployed: it keeps running against the new levels, and its
     # deploy-time baseline stays the one it was armed with. Only a group that is
@@ -336,7 +400,7 @@ def _save_levels(db, group, stoploss, target):
                 f"again on the next poll. Move the level further out to keep it "
                 f"running.")
 
-    note = G.levels_imbalance(group.stoploss, group.target)
+    note = G.levels_advisory(group)
     if note:
         H.flash('warning', f"⚠️ '{group.name}': {note}")
     # A full rerun repaints the dialog's header with the new levels and status;
@@ -363,11 +427,18 @@ def _live_body(db, group_id):
 
     # The table is the whole book, open and closed alike; the chart can only
     # speak for what is still open, so the table stays the default.
+    views = [TABLE_VIEW, PAYOFF_VIEW]
+    # Offered on the history, not the mode: a group taken over by hand keeps the
+    # record of how its levels got where they are.
+    if G.is_auto(group) or G.has_level_events(db, group.id):
+        views.append(JOURNEY_VIEW)
     view = st.segmented_control(
-        "View", [TABLE_VIEW, PAYOFF_VIEW], default=TABLE_VIEW,
+        "View", views, default=TABLE_VIEW,
         key=f"ztrade_view_{group_id}", label_visibility="collapsed")
     if view == PAYOFF_VIEW:
         payoff_chart.render(db, mark)
+    elif view == JOURNEY_VIEW:
+        journey_chart.render(db, group, mark['pnl'])
     else:
         _positions_table(mark)
 
@@ -421,6 +492,8 @@ def _gauge(group, pnl):
         level, colour, name = group.target, _GREEN, "target"
 
     if not level:
+        if name == "target" and int(getattr(group, 'auto_target_stage', 0) or 0):
+            return 0.0, colour, "All targets taken — trailing stoploss only"
         return 0.0, colour, f"No {name} set"
     # Same-signed level and P&L give a positive ratio; an opposite-signed one
     # (a profit floor with the group down, say) clamps to empty rather than

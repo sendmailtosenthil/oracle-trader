@@ -88,6 +88,45 @@ def ist(dt):
     return pytz.utc.localize(dt).astimezone(IST).strftime("%d %b %H:%M:%S")
 
 
+def ist_dt(dt):
+    """A naive UTC timestamp as a naive IST one — for plotting on a time axis.
+
+    Naive on the way out on purpose: Plotly renders a tz-aware axis in the
+    browser's zone, which would put a chart of Indian market hours wherever the
+    viewer happens to be sitting.
+    """
+    if dt is None:
+        return None
+    return pytz.utc.localize(dt).astimezone(IST).replace(tzinfo=None)
+
+
+def level_key(prefix, group, value):
+    """Widget key for a stoploss / target box, tied to the level it is showing.
+
+    A *keyed* Streamlit widget ignores its ``value`` argument once it has session
+    state, so an automatic group's box would go on displaying the level it was
+    first painted with while the ratchet moved past it — and saving the form would
+    then read that stale figure as a hand edit and take the group off automatic.
+    Folding the level into the key makes every new level a new widget, seeded with
+    the figure the group actually holds.
+
+    Only for a group whose levels move on their own; a fixed group's box keeps its
+    state, which is what lets a half-typed number survive an unrelated rerun.
+    """
+    if not groups.is_auto(group):
+        return f"{prefix}{group.id}"
+    return f"{prefix}{group.id}_{value!r}"
+
+
+def dark_theme():
+    """True when the viewer is on a dark theme — used to pick a chart palette."""
+    try:
+        base = st.context.theme.type
+    except Exception:  # noqa: BLE001 - older Streamlit, or no browser context
+        base = st.get_option("theme.base")
+    return base == 'dark'
+
+
 # Keyed on the full credential set so rotating any one token refetches all.
 # max_entries stays tiny: this holds a few dozen small dicts per account.
 @st.cache_data(ttl=20, max_entries=2, show_spinner=False)

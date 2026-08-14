@@ -229,6 +229,22 @@ class TradeGroup(Base):
     # a positive stoploss acts as a profit floor. None = that side is unarmed.
     stoploss = Column(Float, nullable=True)
     target = Column(Float, nullable=True)
+    # Who owns those two numbers. 'fixed' means the user typed them and nothing
+    # moves them again; 'auto' means the app derives them, so the columns above
+    # are a computed cache rather than an instruction and are not editable by
+    # hand. The mode is per-group because both are legitimate: a considered
+    # rupee level on one basket, a size-derived one on the next.
+    levels_mode = Column(String, default='fixed')    # 'fixed' | 'auto'
+    # Auto mode's working state. Everything derives from `auto_expected_profit`
+    # — the profit the basket makes if every contract expires worthless, frozen
+    # when the group is armed. `auto_threshold` is the smallest stoploss step
+    # worth taking, `auto_anchor_pnl` the P&L the stoploss was last set at (the
+    # ratchet measures its next step from there), and `auto_target_stage` how
+    # many targets have been reached — 0 while the first is still ahead.
+    auto_expected_profit = Column(Float, nullable=True)
+    auto_threshold = Column(Float, default=300.0)
+    auto_anchor_pnl = Column(Float, default=0.0)
+    auto_target_stage = Column(Integer, default=0)
     # alert_enabled is the master switch, kept in sync with the channels below:
     # deselecting every channel is how you silence a group.
     alert_enabled = Column(Boolean, default=True)
@@ -296,6 +312,28 @@ class TradeGroupLeg(Base):
     # leave the cell blank instead of claiming a figure.
     cycles = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TradeGroupLevelEvent(Base):
+    # Every move an auto group's levels make, in order: armed, each stoploss
+    # step, each target reached, disarmed. Append-only — a level that has been
+    # set is a fact about the trade, so it is recorded rather than overwritten,
+    # and the sequence is what the dashboard draws as the stoploss journey.
+    # Deleted with the group; nothing here outlives it.
+    __tablename__ = 'ztrade_group_level_events'
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey('ztrade_groups.id'), nullable=False,
+                      index=True)
+    at = Column(DateTime, default=datetime.datetime.utcnow)
+    kind = Column(String, nullable=False)   # see zerodha_trades.services.groups
+    # The levels as they stood *after* the event, the P&L that caused it, and the
+    # expected profit they were derived from — so a row explains itself without
+    # having to replay the ones before it.
+    stoploss = Column(Float, nullable=True)
+    target = Column(Float, nullable=True)
+    pnl = Column(Float, nullable=True)
+    expected_profit = Column(Float, nullable=True)
+    note = Column(String, nullable=True)
 
 
 class PositionSnapshot(Base):
@@ -437,7 +475,15 @@ def _ensure_columns():
                           ('baseline_spot', 'FLOAT'),
                           ('baseline_sigma', 'FLOAT'),
                           ('baseline_iv', 'FLOAT'),
-                          ('baseline_at', 'DATETIME')],
+                          ('baseline_at', 'DATETIME'),
+                          # A group predating the mode had its levels typed by
+                          # hand, which is exactly what 'fixed' means, and the
+                          # auto_* working state is unused on it.
+                          ("levels_mode", "VARCHAR DEFAULT 'fixed'"),
+                          ('auto_expected_profit', 'FLOAT'),
+                          ('auto_threshold', 'FLOAT DEFAULT 300.0'),
+                          ('auto_anchor_pnl', 'FLOAT DEFAULT 0.0'),
+                          ('auto_target_stage', 'INTEGER DEFAULT 0')],
         # Legs gained a banked/live P&L split so a contract can be closed and
         # re-opened without losing what the first cycle made. frozen_pnl is
         # migrated into settled_pnl by migrations/add_settled_pnl.py.

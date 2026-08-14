@@ -23,6 +23,26 @@ PAGE = "ztrade.manage"
 # Display labels, positionally matched to G.ALL_CHANNELS.
 CHANNEL_LABELS = ["Email", "Telegram"]
 
+# What auto mode actually does, in the order it happens. Stated wherever the mode
+# can be chosen, because these levels move on their own and the user needs to know
+# what they agreed to before the first one moves.
+AUTO_RULES = (
+    "Everything is derived from the **expected profit** — the premium this basket "
+    "was opened for, which is what it keeps if every contract expires worthless. "
+    "The opening stoploss is that whole premium (risking it to keep half), the "
+    "opening target is **50%** of it. As profit builds the stoploss trails it, "
+    "stepping up by whatever has been gained since it was last set — but only "
+    "when that step is worth at least the threshold below. What it risks only "
+    "ever falls (−5,000 → −4,700 → −4,000 → 0 → 300 → 1,000); it is never "
+    "widened while the group is armed. "
+    "Reaching a target notifies every channel, drops the stoploss to break-even "
+    "and moves the target up the ladder — **50% → 70% → 85%**; reaching the last "
+    "one advises closing the trade. Closing a leg or adding one re-prices all of "
+    "this from the open premium plus what the closed legs actually made. Every "
+    "move is recorded — see the stoploss journey on the dashboard. Type over "
+    "either level and the group switches to fixed levels for good."
+)
+
 
 def _channels(labels):
     """Map the multiselect's labels back to channel keys."""
@@ -35,6 +55,16 @@ def _channel_badge(group):
         return "🔕 alerts off"
     names = ", ".join(CHANNEL_LABELS[G.ALL_CHANNELS.index(c)] for c in picked)
     return f"🔔 {names}"
+
+
+def _levels_badge(group):
+    """A group's two levels, marked when the app computes them rather than the user.
+
+    Same numbers either way — the mode is what says whether they can be edited,
+    and an unarmed auto group reads "SL — · TGT —" until the calculation lands.
+    """
+    levels = f"SL {H.money(group.stoploss)} &nbsp;·&nbsp; TGT {H.money(group.target)}"
+    return f"⚙️ auto &nbsp;·&nbsp; {levels}" if G.is_auto(group) else levels
 
 
 def _panel_key(group_id):
@@ -152,7 +182,7 @@ def _account_tab(db, user_id, book, lot_map):
 
 def _warn_imbalance(group):
     """Queue the lopsided-levels advisory, if the group's levels trip it."""
-    note = G.levels_imbalance(group.stoploss, group.target)
+    note = G.levels_advisory(group)
     if note:
         H.flash('warning', f"⚠️ '{group.name}': {note}")
 
@@ -232,28 +262,59 @@ def _lots(quantity, lot_size):
 
 
 # ----- create ------------------------------------------------------------
-def _create_form(db, user_id):
-    with st.expander(f"➕ Create a group for {user_id}", expanded=False):
-        # Keys carry the account: every tab renders at once, so a shared key
-        # would make two accounts' forms the same widget.
+def _mode_radio(label, key, default=G.FIXED, horizontal=True):
+    """The fixed/auto levels picker, and the caption explaining the choice.
+
+    Rendered *outside* any form on purpose: a widget inside a Streamlit form does
+    not rerun the page until the form is submitted, so the stoploss and target
+    inputs could not appear and disappear with the selection.
+    """
+    mode = st.radio(
+        label, G.LEVELS_MODES, horizontal=horizontal,
+        index=G.LEVELS_MODES.index(default),
+        format_func=lambda m: G.MODE_LABELS[m], key=key,
+        help="Fixed: you type the two rupee levels and nothing moves them. "
+             "Auto-adjust: the app derives them from the premium the basket was "
+             "opened for, and trails the stoploss as profit builds.")
+    if mode == G.AUTO:
+        st.caption(AUTO_RULES)
+    else:
         st.caption("Both levels must be crossed, not just touched: the stoploss "
                    "fires once P&L falls *below* it, the target once P&L rises "
                    "*above* it. Either may be negative or "
                    "positive — a positive stoploss is a profit floor. Leave one "
                    "blank to disarm that side.")
+    return mode
+
+
+def _create_form(db, user_id):
+    with st.expander(f"➕ Create a group for {user_id}", expanded=False):
+        # Keys carry the account: every tab renders at once, so a shared key
+        # would make two accounts' forms the same widget.
+        mode = _mode_radio("Stoploss & target", f"ztrade_newmode_{user_id}")
+        fixed = mode == G.FIXED
         with st.form(f"ztrade_create_group_{user_id}", clear_on_submit=True):
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 3])
-            name = c1.text_input("Group name", placeholder="e.g. Aug Iron Condor",
-                                 key=f"ztrade_newname_{user_id}")
-            stoploss = c2.number_input(
-                "Stoploss (₹)", value=None, step=500.0, format="%.2f",
-                key=f"ztrade_newsl_{user_id}",
-            )
-            target = c3.number_input(
-                "Target (₹)", value=None, step=500.0, format="%.2f",
-                key=f"ztrade_newtg_{user_id}",
-            )
-            channels = c4.multiselect(
+            cols = st.columns([3, 2, 2, 3] if fixed else [4, 2, 3])
+            name = cols[0].text_input("Group name", placeholder="e.g. Aug Iron Condor",
+                                      key=f"ztrade_newname_{user_id}")
+            stoploss = target = threshold = None
+            if fixed:
+                stoploss = cols[1].number_input(
+                    "Stoploss (₹)", value=None, step=500.0, format="%.2f",
+                    key=f"ztrade_newsl_{user_id}",
+                )
+                target = cols[2].number_input(
+                    "Target (₹)", value=None, step=500.0, format="%.2f",
+                    key=f"ztrade_newtg_{user_id}",
+                )
+            else:
+                threshold = cols[1].number_input(
+                    "Stoploss step (₹)", value=G.DEFAULT_THRESHOLD, min_value=1.0,
+                    step=100.0, format="%.2f", key=f"ztrade_newthr_{user_id}",
+                    help="The threshold: the stoploss only moves when the step is "
+                         "worth at least this much, so it steps in meaningful "
+                         "jumps instead of every tick.")
+            channels = cols[-1].multiselect(
                 "Notify via", CHANNEL_LABELS, default=CHANNEL_LABELS,
                 key=f"ztrade_newch_{user_id}",
                 placeholder="No alerts")
@@ -268,7 +329,8 @@ def _create_form(db, user_id):
             if st.form_submit_button("Create group", type="primary"):
                 group, err = G.create_group(db, name, user_id, stoploss, target,
                                             _channels(channels),
-                                            owner=ACL.current_user(), shared=shared)
+                                            owner=ACL.current_user(), shared=shared,
+                                            levels_mode=mode, threshold=threshold)
                 if err:
                     H.flash('error', err)
                 else:
@@ -293,27 +355,84 @@ def _group_panel(db, group, live_map, positions, lot_map):
         st.markdown(
             f"{badge} &nbsp; P&L {H.colored_money(mark['pnl'])} &nbsp;·&nbsp; "
             f"{mark['n_legs']} instrument(s), {mark['open_legs']} open &nbsp;·&nbsp; "
-            f"SL {H.money(group.stoploss)} &nbsp;·&nbsp; TGT {H.money(group.target)} "
-            f"&nbsp;·&nbsp; {_channel_badge(group)}"
+            f"{_levels_badge(group)} &nbsp;·&nbsp; {_channel_badge(group)}"
         )
         if group.status == G.TRIGGERED and group.trigger_message:
             st.warning(f"{group.trigger_message} ({H.ist(group.triggered_at)} IST)")
 
-        _levels_form(db, group)
+        _levels_form(db, group, live_map)
         _legs_editor(db, group, mark, live_map, lot_map)
         _add_positions(db, group, positions, lot_map)
         _lifecycle_bar(db, group, live_map, lot_map)
 
 
-def _levels_form(db, group):
+_LEVEL_HELP = ("Computed for you. Type over it and this group moves to fixed "
+               "levels — your number stands and nothing adjusts it again.")
+
+
+def _levels_edited(typed_sl, typed_tg, shown_sl, shown_tg):
+    """True when the user actually typed over a level in this form.
+
+    Compared against what was *rendered*, not against the group as it stands now:
+    an auto group's stoploss can move between the page painting and the form being
+    submitted, and treating the poller's own step as a hand edit would take the
+    group off automatic behind the user's back.
+    """
+    return _differs(typed_sl, shown_sl) or _differs(typed_tg, shown_tg)
+
+
+def _auto_status(db, group, live_map=None):
+    """Where an auto group's levels stand, and why, in one or two lines.
+
+    Judged against the book this page has just fetched, which is fresher than the
+    poller's snapshot and is the only book a draft group has at all.
+    """
+    expected, problem = G.auto_basis(db, group, live_map)
+    if problem:
+        st.warning(f"⚠️ Automatic levels can't be worked out yet — {problem}")
+        return
+    st.caption(
+        f"Expected profit **₹{expected:,.2f}** — open premium plus what the closed "
+        f"legs made · stoploss steps of **₹{G.threshold_of(group):,.2f}** · working "
+        f"toward {G.target_label(group)}."
+        + ("" if group.status != G.DRAFT else
+           " Both levels follow the legs until you deploy; after that the stoploss "
+           "only ever tightens.")
+    )
+
+
+def _levels_form(db, group, live_map=None):
+    mode_key = f"mode_{group.id}"
+    mode = _mode_radio("Stoploss & target", mode_key,
+                       default=G.levels_mode_of(group))
+    auto = mode == G.AUTO
+    if auto:
+        _auto_status(db, group, live_map)
     with st.form(f"ztrade_levels_{group.id}"):
-        c1, c2, c3, c4 = st.columns([3, 2, 2, 3])
-        name = c1.text_input("Group name", value=group.name, key=f"nm_{group.id}")
-        stoploss = c2.number_input("Stoploss (₹)", value=group.stoploss, step=500.0,
-                                   format="%.2f", key=f"sl_{group.id}")
-        target = c3.number_input("Target (₹)", value=group.target, step=500.0,
-                                 format="%.2f", key=f"tg_{group.id}")
-        channels = c4.multiselect(
+        cols = st.columns([3, 2, 2, 3] if not auto else [3, 2, 2, 2, 3])
+        name = cols[0].text_input("Group name", value=group.name, key=f"nm_{group.id}")
+        # Both levels are editable in either mode. On auto they are prefilled with
+        # what the app computed, and typing over one is how the user takes the
+        # group over — see `_levels_edited` for why the comparison is against what
+        # was *rendered*.
+        shown_sl, shown_tg = group.stoploss, group.target
+        stoploss = cols[1].number_input("Stoploss (₹)", value=shown_sl,
+                                        step=500.0, format="%.2f",
+                                        key=H.level_key('sl_', group, shown_sl),
+                                        help=_LEVEL_HELP if auto else None)
+        target = cols[2].number_input("Target (₹)", value=shown_tg, step=500.0,
+                                      format="%.2f",
+                                      key=H.level_key('tg_', group, shown_tg),
+                                      help=_LEVEL_HELP if auto else None)
+        threshold = None
+        if auto:
+            threshold = cols[3].number_input(
+                "Stoploss step (₹)", value=G.threshold_of(group), min_value=1.0,
+                step=100.0, format="%.2f", key=f"thr_{group.id}",
+                help="The stoploss only moves when the step is worth at least "
+                     "this much. Takes effect on the next step, including on a "
+                     "group that is already deployed.")
+        channels = cols[-1].multiselect(
             "Notify via", CHANNEL_LABELS,
             default=[CHANNEL_LABELS[i] for i, c in enumerate(G.ALL_CHANNELS)
                      if c in G.channels_of(group)],
@@ -324,13 +443,29 @@ def _levels_form(db, group):
             help="When on, anyone who can open the Zerodha Trades dashboard sees "
                  "this group's P&L. Editing stays with you.")
         if st.form_submit_button("Save settings"):
-            _, err = G.update_group(db, group, name=name, stoploss=stoploss,
-                                    target=target, channels=_channels(channels),
-                                    shared=shared)
+            taken_over = auto and _levels_edited(stoploss, target, shown_sl, shown_tg)
+            _, err = G.update_group(
+                db, group, name=name, channels=_channels(channels), shared=shared,
+                threshold=threshold,
+                levels_mode=G.FIXED if taken_over else mode,
+                # On auto with nothing typed over, send neither level: they are
+                # the ratchet's, and this form's copy is already seconds stale.
+                stoploss=stoploss if (taken_over or not auto) else ...,
+                target=target if (taken_over or not auto) else ...)
             if err:
                 H.flash('error', err)
+            elif taken_over:
+                # The radio holds its own widget state, which is still on
+                # Auto-adjust; drop it so it re-reads the mode the group now has.
+                # Left set, the next save would quietly hand the group back to
+                # automatic and re-derive the levels just typed.
+                st.session_state.pop(mode_key, None)
+                H.flash('info', f"'{name}' is now on fixed levels — you set the "
+                                f"stoploss and target by hand, and nothing moves "
+                                f"them. Pick Auto-adjust again to hand them back.")
             else:
                 H.flash('success', f"Saved '{name}'.")
+            if not err:
                 _warn_imbalance(group)
             st.rerun()
 

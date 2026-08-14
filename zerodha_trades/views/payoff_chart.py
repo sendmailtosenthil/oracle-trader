@@ -49,11 +49,7 @@ GRID_POINTS = 161
 
 def _palette():
     """Colours for the viewer's current theme."""
-    try:
-        base = st.context.theme.type
-    except Exception:  # noqa: BLE001 - older Streamlit, or no browser context
-        base = st.get_option("theme.base")
-    return DARK if base == 'dark' else LIGHT
+    return DARK if H.dark_theme() else LIGHT
 
 
 def render(db, mark):

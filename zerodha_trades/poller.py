@@ -155,7 +155,12 @@ class Poller:
         recipient = settings.alert_email or None
 
         def handler(group, pnl, trigger_type, message):
-            log.warning("TRIGGER %s %s at %.2f", group.name, trigger_type, pnl)
+            # An auto group's target is an escalation, not an exit: it keeps
+            # running with new levels, so say which happened rather than call
+            # everything a trigger.
+            log.warning("%s %s %s at %.2f",
+                        "TRIGGER" if group.status == G.TRIGGERED else "LEVEL",
+                        group.name, trigger_type, pnl)
             alerts.send_group_alert(group, pnl, trigger_type, message, recipient)
 
         return handler
