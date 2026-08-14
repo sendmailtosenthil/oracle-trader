@@ -25,7 +25,7 @@ bash deploy/setup.sh          # run again: installs service + cron, starts the a
   sudo systemctl restart oracle-web oracle-api
   ```
 - **System timezone set to `Asia/Kolkata`** — Ubuntu's cron ignores `CRON_TZ`, so the box itself is put on IST and cron's system-local time *is* IST. Without this, jobs run in UTC (5.5h late). App logic is unaffected (it uses explicit `datetime.now(IST)`).
-- **User crontab** — the four jobs in IST: `signals` 15:35, `download` 15:40, `backup` 16:00, `summary` 08:30. Each runs `python -m bees.bot <job>` from the venv and exits.
+- **User crontab** — the four jobs in IST: `signals` 15:45, `download` 15:40, `backup` 16:00, `summary` 08:30. Each runs `python -m bees.bot <job>` from the venv and exits. `signals` sits at 15:45 (`DATA_CUTOFF` in `common/market_calendar.py`) so the day's closing candle has landed; if it hasn't, the scan falls back to the previous session rather than reading a partial bar.
 
 ## Logins
 Users live in `oracle.db` and are managed in the app under **Setup › User

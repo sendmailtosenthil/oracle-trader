@@ -49,8 +49,14 @@ def render(db, strategies):
         roi = ((total_val / total_invested) - 1) * 100 if total_invested > 0 else 0
         strat_xirr = calculate_xirr(db, strat.id, total_val)
 
-        # Live prices
-        st.caption(f"**{strat.asset1}** ₹{res['live_price1']:.2f}  ·  **{strat.asset2}** ₹{res['live_price2']:.2f}")
+        # Live prices, plus which session they belong to and when we pulled them.
+        # Mid-session `as_of` is yesterday: today joins once its closing candle lands.
+        as_of, fetched_at = res['as_of'], res['fetched_at']
+        st.caption(
+            f"**{strat.asset1}** ₹{res['live_price1']:.2f}  ·  "
+            f"**{strat.asset2}** ₹{res['live_price2']:.2f}  ·  "
+            f"close of **{as_of:%d-%b-%Y}**  ·  refreshed {fetched_at:%d-%b-%Y %H:%M:%S} IST"
+        )
 
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Cash Invested", f"₹{cash_invested:,.2f}",

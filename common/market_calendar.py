@@ -17,6 +17,18 @@ import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
 
+# The NSE cash session runs 09:15–15:30 IST. Its last one-minute candle is
+# stamped 15:29 (it covers 15:29–15:30), so the arrival of *that bar* is the
+# honest "this session is complete" signal. Anything with minute data should
+# test for it rather than read a clock — the feed lags the bell by a few
+# minutes, and a clock can't tell a settled feed from a stalled one.
+LAST_MINUTE_BAR = datetime.time(15, 29)
+
+# Fallback for callers that only have daily bars and so can't check for the
+# closing candle: treat the session as settled from 3:45 PM IST. Also the time
+# the EOD `signals` cron fires (see deploy/setup.sh).
+DATA_CUTOFF = datetime.time(15, 45)
+
 # holiday.txt sits next to the repo root (this file is common/market_calendar.py).
 _HOLIDAY_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "holiday.txt"
@@ -73,6 +85,16 @@ def is_trading_day(value=None):
     """
     d = _as_date(value)
     return d.weekday() < 5 and d not in _load_holidays()
+
+
+def before_data_cutoff(now=None):
+    """True while today's closing data can't be trusted yet (before 3:45 PM IST).
+
+    Callers that build daily series drop today's row while this is True, so a
+    half-formed candle never lands in a Donchian channel or a valuation.
+    """
+    now = now or datetime.datetime.now(IST)
+    return now.time() < DATA_CUTOFF
 
 
 def skip_reason(value=None):

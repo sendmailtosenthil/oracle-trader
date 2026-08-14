@@ -91,7 +91,7 @@ CRON_BLOCK=$(cat <<CRON
 # >>> oracle jobs (managed by deploy/setup.sh) >>>
 CRON_TZ=Asia/Kolkata
 10 8 * * * $WRAP relogin  >> $APP_DIR/logs/cron.log 2>&1
-35 15 * * * $WRAP signals  >> $APP_DIR/logs/cron.log 2>&1
+45 15 * * * $WRAP signals  >> $APP_DIR/logs/cron.log 2>&1
 40 15 * * * $WRAP download >> $APP_DIR/logs/cron.log 2>&1
 0 16 * * *  $WRAP backup   >> $APP_DIR/logs/cron.log 2>&1
 0 17 * * 1-5 $WRAP momentum >> $APP_DIR/logs/cron.log 2>&1

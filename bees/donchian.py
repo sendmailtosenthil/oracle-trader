@@ -2,7 +2,8 @@ import yfinance as yf
 import pandas as pd
 import datetime
 
-from common.timez import now_ist
+from common.market_calendar import LAST_MINUTE_BAR
+from common.timez import IST, now_ist
 
 def clean_indian_etf_data(series):
     adj = series.copy()
@@ -41,6 +42,16 @@ def get_clean_daily_close(ticker, window):
     return clean_indian_etf_data(close)
 
 def get_latest_intraday_data(ticker):
+    """Closing price of the latest *completed* session, and that session's date.
+
+    Today counts only once its closing candle has actually arrived — the
+    ``15:29`` one-minute bar, which covers the final minute up to the 3:30 PM
+    bell. That bar's presence, not the wall clock, is what marks the session
+    done: the feed lags the bell by a few minutes, so a clock-based rule would
+    hand back a half-formed candle as if it were the close, and would equally
+    mistake a feed outage for a finished day. Until it lands we fall back to the
+    previous session, which is what the channel was built on anyway.
+    """
     # Fetch 5 days of 1-minute data to safely cover long weekends
     df = yf.download(ticker, period='5d', interval='1m', progress=False)
     if df.empty:
@@ -51,20 +62,19 @@ def get_latest_intraday_data(ticker):
     close = close.dropna()
     if close.empty:
         return None, None
-        
-    import pytz
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.datetime.now(ist)
-    
-    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
-        # Before 3:30 PM, exclude today's date from the dataset
-        today_str = now.strftime('%Y-%m-%d')
-        close = close[close.index.strftime('%Y-%m-%d') != today_str]
+
+    # yfinance stamps .NS minute bars in exchange time, but don't rely on it.
+    close.index = (close.index.tz_localize(IST) if close.index.tz is None
+                   else close.index.tz_convert(IST))
+
+    today = now_ist().date()
+    last_dt = close.index[-1]
+    if last_dt.date() == today and last_dt.time() < LAST_MINUTE_BAR:
+        close = close[close.index.date != today]
         if close.empty:
             return None, None
-            
-    # EOD scanning uses the latest available closed data
-    last_dt = close.index[-1]
+        last_dt = close.index[-1]
+
     return float(close.iloc[-1]), pd.to_datetime(last_dt.strftime('%Y-%m-%d'))
 
 def evaluate_donchian_intraday(asset1, asset2, window):
@@ -83,7 +93,7 @@ def evaluate_donchian_intraday(asset1, asset2, window):
     if price1 and price2 and date1 == date2:
         df.loc[date1, 'ASSET1'] = price1
         df.loc[date1, 'ASSET2'] = price2
-        
+
     if date1:
         # Strip out any buggy future dates yfinance might have injected
         df = df[df.index <= date1]
@@ -105,7 +115,7 @@ def evaluate_donchian_intraday(asset1, asset2, window):
         signal = 'ASSET1'
     elif live_ratio < lower:
         signal = 'ASSET2'
-        
+
     return {
         'live_price1': live_price1,
         'live_price2': live_price2,
@@ -113,5 +123,9 @@ def evaluate_donchian_intraday(asset1, asset2, window):
         'upper': upper,
         'lower': lower,
         'signal': signal,
+        # Session the numbers above describe, and when we pulled them, so the
+        # dashboard can say which close it is showing.
+        'as_of': df.index[-1].date(),
+        'fetched_at': now_ist(),
         'df': df # useful for plotting
     }

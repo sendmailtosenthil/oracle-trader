@@ -1,7 +1,8 @@
 """Market-data helpers backed by yfinance.
 
-All times are evaluated in IST; before the 3:30 PM market close the current
-day's (incomplete) candle is excluded so figures reflect the last closed day.
+All times are evaluated in IST; until the day's data has settled (see
+``common.market_calendar.DATA_CUTOFF``) the current day's incomplete candle is
+excluded so figures reflect the last closed day.
 """
 import datetime
 
@@ -9,22 +10,19 @@ import pandas as pd
 import pytz
 import yfinance as yf
 
+from common.market_calendar import before_data_cutoff
+
 IST = pytz.timezone('Asia/Kolkata')
 
 
-def _before_market_close(now=None):
-    now = now or datetime.datetime.now(IST)
-    return now.hour < 15 or (now.hour == 15 and now.minute < 30)
-
-
 def get_reference_close(ticker):
-    """Latest closed daily close for a ticker (today excluded before 3:30 PM IST)."""
+    """Latest closed daily close for a ticker (today excluded before the cutoff)."""
     df = yf.download(ticker, period='5d', progress=False)
     if df.empty:
         return 0.0
 
     now = datetime.datetime.now(IST)
-    if _before_market_close(now):
+    if before_data_cutoff(now):
         today_str = now.strftime('%Y-%m-%d')
         df = df[df.index.strftime('%Y-%m-%d') != today_str]
 
@@ -59,7 +57,7 @@ def get_asset_metrics(ticker):
     daily_close = close.resample('D').last().dropna()
 
     now = datetime.datetime.now(IST)
-    if _before_market_close(now):
+    if before_data_cutoff(now):
         today_str = now.strftime('%Y-%m-%d')
         daily_close = daily_close[daily_close.index.strftime('%Y-%m-%d') != today_str]
 
