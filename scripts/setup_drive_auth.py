@@ -1,13 +1,17 @@
 """One-time Google Drive OAuth setup — mints token.json from credentials.json.
 
-Run locally (needs a browser-reachable machine):
+On the headless VPS, tunnel the callback port from your laptop:
 
-    python scripts/setup_drive_auth.py
+    ssh -L 8765:localhost:8765 -i ~/.ssh/oracle-vps-private.key ubuntu@<vps>
+    cd ~/oracle-trader && venv/bin/python scripts/setup_drive_auth.py
+
+then open the printed URL in your laptop's browser. Google redirects to
+localhost:8765, which the tunnel carries back to the script.
 
 1. Download OAuth 2.0 Desktop credentials from Google Cloud Console.
 2. Save them as ``credentials.json`` in the project root (or set
    DRIVE_CREDENTIALS_PATH).
-3. Run this script, follow the URL, paste the code. It writes ``token.json``
+3. Run this script and approve access in the browser. It writes ``token.json``
    (with a refresh_token) which the app reuses for uploads.
 """
 import json
@@ -29,8 +33,13 @@ def main():
         sys.exit(1)
 
     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-    # Console flow works on headless machines; run_local_server() if a browser is available.
-    creds = flow.run_console() if hasattr(flow, "run_console") else flow.run_local_server(port=0)
+    # google-auth-oauthlib >= 1.0 dropped run_console(); a fixed port lets the
+    # redirect ride an SSH tunnel. prompt=consent forces a fresh refresh_token.
+    port = int(os.environ.get("DRIVE_AUTH_PORT", "8765"))
+    creds = flow.run_local_server(
+        port=port, open_browser=False, access_type="offline", prompt="consent",
+        authorization_prompt_message="Open this URL in your browser:\n{url}\n",
+    )
 
     token = {
         "access_token": creds.token,

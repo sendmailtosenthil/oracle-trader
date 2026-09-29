@@ -56,8 +56,19 @@ class GoogleDriveUploader:
             client_secret=client.get("client_secret"),
             scopes=SCOPES,
         )
-        if creds.refresh_token and (not creds.valid or creds.expired):
-            creds.refresh(Request())
+        # token.json carries no expiry, so creds look valid even when the access
+        # token is long dead. Refresh up front so a revoked grant fails here.
+        if creds.refresh_token:
+            from google.auth.exceptions import RefreshError
+            try:
+                creds.refresh(Request())
+            except RefreshError as exc:
+                # invalid_grant: the grant was revoked (password change, access
+                # removed, client secret reset) or expired ("Testing" apps: 7 days).
+                raise RuntimeError(
+                    f"Google Drive refresh token in {self.token_path} is expired or "
+                    f"revoked ({exc}). Re-mint it with scripts/setup_drive_auth.py."
+                ) from exc
         return build("drive", "v3", credentials=creds, cache_discovery=False)
 
     def find_file(self, name, parent_id, mime_type=None):
