@@ -100,17 +100,6 @@ class BrokerConfig(Base):
     totp_enc = Column(String, nullable=True)       # base32 TOTP secret (ciphertext)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-class MomentumDelivery(Base):
-    # Daily NSE delivery % per stock (from the one-per-day security bhavcopy).
-    # Accumulates over time; the delivery scoring model uses the latest value.
-    __tablename__ = 'momentum_delivery'
-    __table_args__ = (UniqueConstraint('date', 'symbol', name='uq_momentum_delivery_date_symbol'),)
-    id = Column(Integer, primary_key=True)
-    date = Column(String, nullable=False)        # ISO trade date
-    symbol = Column(String, nullable=False)      # NSE symbol (no .NS)
-    deliv_pct = Column(Float, nullable=True)      # delivery % (0–100)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
 class DownloadJob(Base):
     __tablename__ = 'download_jobs'
     id = Column(Integer, primary_key=True)
@@ -120,73 +109,6 @@ class DownloadJob(Base):
     end_date = Column(String, nullable=False)
     symbols = Column(String, nullable=True)       # comma-separated, e.g. 'NIFTY,BANKNIFTY'
     message = Column(String, nullable=True)       # summary / error text
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-class MomentumConfig(Base):
-    # Single-row configuration for the momentum strategy (Nifty500 weighted
-    # momentum). Mirrors quant-momentum's config.js — factors stored as JSON.
-    __tablename__ = 'momentum_config'
-    id = Column(Integer, primary_key=True)
-    investment = Column(Float, default=100000.0)        # initial capital (₹)
-    num_stocks = Column(Integer, default=15)            # equal-weight holdings
-    scoring_model = Column(String, default='clenow')   # risk_adjusted|clenow|obv|delivery
-    clenow_days = Column(Integer, default=180)          # Clenow regression window (CALENDAR days ≈ 6 months)
-    rebalance_days = Column(Integer, default=14)        # rebalance cadence (bi-weekly)
-    factors_json = Column(String, default='[{"months": 3, "weight": 0.30}, {"months": 6, "weight": 0.50}, {"months": 9, "weight": 0.20}]')
-    vol_enabled = Column(Boolean, default=True)         # risk-adjust by volatility
-    vol_months = Column(Integer, default=3)             # volatility lookback
-    min_history_coverage = Column(Float, default=0.8)   # min fraction of expected bars
-    replace_rank_threshold = Column(Integer, default=40)  # 'fixed' mode: sell when rank > this
-    exit_mode = Column(String, default='trailing')      # 'trailing' (default) | 'fixed'
-    trail_gap = Column(Integer, default=25)             # 'trailing' mode: sell when rank > best_rank + this
-    reinvest_idle_cash = Column(Boolean, default=True)  # redeploy all cash on rebalance
-    cash = Column(Float, default=100000.0)              # idle cash in hand
-    capital_injected = Column(Float, default=0.0)       # extra capital from min-1 top-ups
-
-class MomentumHolding(Base):
-    # A currently-held position (one row per symbol). Recalculated from
-    # MomentumTrade on every executed rebalance.
-    __tablename__ = 'momentum_holdings'
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, unique=True, nullable=False)   # NSE ticker, e.g. 'MARUTI.NS'
-    shares = Column(Integer, default=0)
-    avg_cost = Column(Float, default=0.0)
-    entry_date = Column(String, nullable=True)             # ISO date first bought
-    best_rank = Column(Integer, nullable=True)             # best (lowest) rank since entry (trailing-exit baseline)
-
-class MomentumTrade(Base):
-    # Append-only trade ledger. Sells carry realized pnl + holding metadata.
-    __tablename__ = 'momentum_trades'
-    id = Column(Integer, primary_key=True)
-    date = Column(String, nullable=False)                  # ISO trade date
-    symbol = Column(String, nullable=False)
-    side = Column(String, nullable=False)                  # 'BUY' or 'SELL'
-    shares = Column(Integer, nullable=False)
-    price = Column(Float, nullable=False)
-    value = Column(Float, nullable=False)                  # shares * price (turnover)
-    charges = Column(Float, default=0.0)                   # Zerodha charges (STT, txn, GST, stamp, DP)
-    rank = Column(Integer, nullable=True)                  # momentum rank at trade time
-    avg_cost = Column(Float, nullable=True)                # for sells: cost basis sold
-    pnl = Column(Float, nullable=True)                     # realized pnl, net of charges (sells)
-    reason = Column(String, nullable=True)                 # 'deploy' / 'rank>40' / 'left-index' ...
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-class MomentumRanking(Base):
-    # Snapshot of a computed ranking run, keyed by (as_of, symbol). Persisted so
-    # the dashboard can show the latest ranking without recomputing every load.
-    __tablename__ = 'momentum_rankings'
-    __table_args__ = (UniqueConstraint('as_of', 'symbol', name='uq_momentum_rankings_asof_symbol'),)
-    id = Column(Integer, primary_key=True)
-    as_of = Column(String, nullable=False)                 # ISO ranking date
-    symbol = Column(String, nullable=False)
-    rank = Column(Integer, nullable=False)                 # vol-adjusted rank
-    raw_rank = Column(Integer, nullable=True)              # raw-momentum rank
-    score = Column(Float, default=0.0)                     # final (vol-adjusted) score
-    blended = Column(Float, default=0.0)                   # blended factor return
-    r3m = Column(Float, nullable=True)
-    r6m = Column(Float, nullable=True)
-    r9m = Column(Float, nullable=True)
-    vol = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class DownloadStat(Base):
@@ -451,14 +373,6 @@ def _ensure_columns():
         'trades': [('charges', 'FLOAT DEFAULT 0.0'),
                    ('charges_breakdown', 'VARCHAR'),
                    ('pledge', 'BOOLEAN DEFAULT 0')],
-        'momentum_trades': [('charges', 'FLOAT DEFAULT 0.0')],
-        'momentum_rankings': [('raw_rank', 'INTEGER')],
-        'momentum_config': [("scoring_model", "VARCHAR DEFAULT 'risk_adjusted'"),
-                            ('clenow_days', 'INTEGER DEFAULT 90'),
-                            ('rebalance_days', 'INTEGER DEFAULT 14'),
-                            ("exit_mode", "VARCHAR DEFAULT 'trailing'"),
-                            ('trail_gap', 'INTEGER DEFAULT 25')],
-        'momentum_holdings': [('best_rank', 'INTEGER')],
         'ztrade_settings': [('test_mode', 'BOOLEAN DEFAULT 0')],
         # Pre-multi-account groups all belonged to the master login.
         # owner/shared arrive NULL and 0: an unowned group is claimable by the
@@ -556,10 +470,6 @@ def seed_data():
         
         db.add(Portfolio(strategy_id=bank_it.id, asset='ASSET1', units=0.0, invested_amount=0.0))
         db.add(Portfolio(strategy_id=bank_it.id, asset='ASSET2', units=0.0, invested_amount=0.0))
-
-    # Default momentum config (15-stock Nifty500 weighted-momentum strategy).
-    if not db.query(MomentumConfig).first():
-        db.add(MomentumConfig(investment=225000.0, num_stocks=15, cash=225000.0))
 
     db.commit()
     db.close()

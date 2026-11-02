@@ -168,9 +168,8 @@ class ZerodhaClient:
         row the master happens to print first wins.
 
         Streams the instruments dump and keeps only the handful of rows that
-        match, so the ~100k-row master is never materialised — same low-memory
-        approach as :meth:`nse_eq_token_map` — and stops reading the moment
-        every wanted symbol is found.
+        match, so the ~100k-row master is never materialised, and stops reading
+        the moment every wanted symbol is found.
         """
         wanted = set(tradingsymbols or ())
         if not wanted:
@@ -244,34 +243,6 @@ class ZerodhaClient:
         return _safe_float(candles[-1]["close"]) if candles else None
 
     # ----- instruments -------------------------------------------------
-    def nse_eq_token_map(self, timeout=60):
-        """Stream the instruments dump and return only ``{tradingsymbol: token}``
-        for NSE equity (segment NSE, type EQ).
-
-        Low-memory: streams line-by-line and keeps just the small map (~2k
-        entries) — never materialises the full ~100k-row master. Used by the
-        momentum price refresh on memory-constrained hosts.
-        """
-        resp = self._session.get(_INSTRUMENTS_URL, timeout=timeout, stream=True)
-        resp.raise_for_status()
-        reader = csv.reader(codecs.iterdecode(resp.iter_lines(), "utf-8"))
-        try:
-            next(reader)  # header
-        except StopIteration:
-            return {}
-        # Columns: instrument_token,exchange_token,tradingsymbol,name,last_price,
-        # expiry,strike,tick_size,lot_size,instrument_type,segment,exchange
-        out = {}
-        for row in reader:
-            if len(row) < 12:
-                continue
-            if row[10] == "NSE" and row[9] == "EQ":
-                try:
-                    out[row[2]] = int(row[0])
-                except ValueError:
-                    continue
-        return out
-
     def load_instruments(self, keep_names=None, timeout=60):
         """Stream the instruments master and index it, keeping only what's needed.
 

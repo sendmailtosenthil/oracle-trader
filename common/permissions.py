@@ -63,13 +63,6 @@ PAGES = [
     Page("downloader.download", "📥 Downloader", "Options Download", "⬇️", "options-download",
          help="Read shows download history; edit can start a download."),
 
-    Page("momentum.dashboard", "📈 Momentum", "Dashboard", "📊", "momentum",
-         help="Holdings, ranking and performance."),
-    Page("momentum.rebalance", "📈 Momentum", "Rebalance", "🔁", "momentum-rebalance",
-         readable=False, help="Executes rebalances, refreshes prices and edits settings."),
-    Page("momentum.ledger", "📈 Momentum", "Ledger & History", "📒", "momentum-ledger",
-         help="Momentum trade history."),
-
     Page("ztrade.dashboard", "📦 Zerodha Trades", "Dashboard", "📊", "ztrade",
          help="Group P&L cards and position detail."),
     Page("ztrade.manage", "📦 Zerodha Trades", "Group Management", "🗂️", "ztrade-groups",

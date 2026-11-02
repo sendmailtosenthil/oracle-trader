@@ -74,7 +74,7 @@ def clear_token_cache():
 #
 # The **master** account (always PC8006) keeps the bare ``broker_name`` of
 # 'ZERODHA'; every other account is filed under 'ZERODHA:<USER_ID>'. That layout
-# is deliberate: all the automated jobs (downloader, momentum, bot, poller)
+# is deliberate: all the automated jobs (downloader, bot, poller)
 # query ``broker_name == 'ZERODHA'``, so they keep resolving to the master
 # account untouched, while the extra accounts sit alongside without a schema
 # change or a migration.

@@ -10,7 +10,7 @@ a fresh database.
                                             --grant ztrade.dashboard=edit \
                                             --grant ztrade.manage=edit
     python scripts/manage_users.py add newadmin --admin
-    python scripts/manage_users.py grant sasi --grant momentum.dashboard=read
+    python scripts/manage_users.py grant sasi --grant bees.dashboard=read
     python scripts/manage_users.py passwd senthil
     python scripts/manage_users.py delete sasi
     python scripts/manage_users.py pages          # what can be granted

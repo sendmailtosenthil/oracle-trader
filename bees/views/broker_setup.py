@@ -64,7 +64,7 @@ def render(db):
 
     st.markdown(f"#### Master account — `{MASTER_USER_ID}`")
     st.caption(
-        "Used by every automated job: downloader, momentum, the bot and the "
+        "Used by every automated job: downloader, the bot and the "
         "position poller. Its User ID is fixed."
     )
 

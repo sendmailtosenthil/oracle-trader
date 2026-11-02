@@ -2,8 +2,7 @@
 
 The market is closed on weekends and on a fixed list of annual holidays, so the
 scheduled jobs that only make sense on a trading day (data download, EOD
-signals, DB backup, momentum advisory, the daily summary, and the enctoken
-refresh) consult :func:`is_trading_day` and no-op otherwise.
+signals, DB backup, the daily summary, and the enctoken refresh) consult :func:`is_trading_day` and no-op otherwise.
 
 Holidays live in ``holiday.txt`` at the repo root — one date per line in NSE's
 ``DD-Mon-YY`` format (e.g. ``15-Jan-26``). A missing/empty file degrades

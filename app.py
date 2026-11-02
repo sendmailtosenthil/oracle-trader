@@ -3,8 +3,7 @@
 Thin orchestration layer: page config, authentication, sidebar navigation, and
 dispatch to per-module page renderers. Cross-module infrastructure lives in
 ``common`` (database, Zerodha client, notifications, permissions); feature logic
-lives in the ``bees``, ``downloader``, ``momentum`` and ``zerodha_trades``
-modules.
+lives in the ``bees``, ``downloader`` and ``zerodha_trades`` modules.
 
 Navigation uses Streamlit's native ``st.navigation`` so each module's pages
 render as clickable links grouped under a section header. Which links appear is
@@ -24,9 +23,6 @@ from bees.auth import require_auth, logout
 from bees.styles import inject_global_css
 from bees.views import dashboard, operations, ledger, broker_setup
 from downloader.views import page as downloader_page
-from momentum.views import dashboard as momentum_dashboard
-from momentum.views import rebalance as momentum_rebalance
-from momentum.views import ledger as momentum_ledger
 from zerodha_trades.views import manage as ztrade_manage
 from zerodha_trades.views import dashboard as ztrade_dashboard
 from admin import users as admin_users
@@ -84,18 +80,6 @@ def _options_download():
     downloader_page.render(db)
 
 
-def _momentum_dashboard():
-    momentum_dashboard.render(db)
-
-
-def _momentum_rebalance():
-    momentum_rebalance.render(db)
-
-
-def _momentum_ledger():
-    momentum_ledger.render(db)
-
-
 def _ztrade_dashboard():
     ztrade_dashboard.render(db)
 
@@ -121,9 +105,6 @@ RENDERERS = {
     "bees.operations": _operations,
     "bees.ledger": _ledger,
     "downloader.download": _options_download,
-    "momentum.dashboard": _momentum_dashboard,
-    "momentum.rebalance": _momentum_rebalance,
-    "momentum.ledger": _momentum_ledger,
     "ztrade.dashboard": _ztrade_dashboard,
     "ztrade.manage": _ztrade_manage,
     "setup.zerodha": _zerodha_accounts,
