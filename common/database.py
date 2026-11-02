@@ -460,16 +460,6 @@ def seed_data():
         # Init portfolio
         db.add(Portfolio(strategy_id=nifty_gold.id, asset='ASSET1', units=0.0, invested_amount=0.0))
         db.add(Portfolio(strategy_id=nifty_gold.id, asset='ASSET2', units=0.0, invested_amount=0.0))
-        
-    # Create BANK vs IT Strategy
-    bank_it = db.query(Strategy).filter(Strategy.name == 'BANK vs IT').first()
-    if not bank_it:
-        bank_it = Strategy(name='BANK vs IT', window=15, asset1='BANKBEES.NS', asset2='ITBEES.NS', current_signal_target='ASSET1')
-        db.add(bank_it)
-        db.commit()
-        
-        db.add(Portfolio(strategy_id=bank_it.id, asset='ASSET1', units=0.0, invested_amount=0.0))
-        db.add(Portfolio(strategy_id=bank_it.id, asset='ASSET2', units=0.0, invested_amount=0.0))
 
     db.commit()
     db.close()

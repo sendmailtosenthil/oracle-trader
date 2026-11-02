@@ -43,8 +43,6 @@ STT_RATES = {
 # Map each tradable ticker to its STT category.
 ETF_CATEGORY = {
     'NIFTYBEES.NS': 'equity_etf',
-    'BANKBEES.NS': 'equity_etf',
-    'ITBEES.NS': 'equity_etf',
     'GOLDBEES.NS': 'gold_etf',
 }
 DEFAULT_CATEGORY = 'equity_etf'
