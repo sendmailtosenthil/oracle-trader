@@ -197,8 +197,7 @@ def _add_form(db):
     with st.expander("➕ Add a Zerodha account", expanded=False):
         st.caption(
             "The account is filed under your name: only you (and administrators) "
-            "will be able to see or change its credentials, and its positions and "
-            "groups appear under your Zerodha Trades tabs."
+            "will be able to see or change its credentials."
         )
         crypto_missing = _crypto_warning()
 
@@ -241,8 +240,7 @@ def render(db):
     st.title("📇 Zerodha Accounts")
     st.write(
         "Kite logins used across the app. An account belongs to whoever adds it: "
-        "its password and TOTP secret are visible only to them, and its positions "
-        "and trade groups appear only under their Zerodha Trades tabs."
+        "its password and TOTP secret are visible only to them."
     )
 
     accounts = visible_accounts(db)

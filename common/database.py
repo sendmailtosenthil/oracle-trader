@@ -133,185 +133,21 @@ class DownloadStat(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
-# --- Zerodha Trades -------------------------------------------------------
-# User-defined baskets ("groups") over live Kite positions. A group carries its
-# own stoploss / target in rupees and is monitored independently of the broker,
-# so a multi-leg structure can be managed as one risk unit even though Zerodha
-# only ever reports it as unrelated legs.
-
-class TradeGroup(Base):
-    __tablename__ = 'ztrade_groups'
-    id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True, nullable=False)
-    # Which Zerodha account the legs belong to. Groups never span accounts —
-    # positions from two logins are different books entirely.
-    user_id = Column(String, nullable=False, default='PC8006')
-    # Rupee P&L triggers. Either may be positive or negative: `target` is the
-    # upper trigger (fires when P&L rises to it), `stoploss` the lower one — so
-    # a positive stoploss acts as a profit floor. None = that side is unarmed.
-    stoploss = Column(Float, nullable=True)
-    target = Column(Float, nullable=True)
-    # Who owns those two numbers. 'fixed' means the user typed them and nothing
-    # moves them again; 'auto' means the app derives them, so the columns above
-    # are a computed cache rather than an instruction and are not editable by
-    # hand. The mode is per-group because both are legitimate: a considered
-    # rupee level on one basket, a size-derived one on the next.
-    levels_mode = Column(String, default='fixed')    # 'fixed' | 'auto'
-    # Auto mode's working state. Everything derives from `auto_expected_profit`
-    # — the profit the basket makes if every contract expires worthless, frozen
-    # when the group is armed. `auto_threshold` is the smallest stoploss step
-    # worth taking, `auto_anchor_pnl` the P&L the stoploss was last set at (the
-    # ratchet measures its next step from there), and `auto_target_stage` how
-    # many targets have been reached — 0 while the first is still ahead.
-    auto_expected_profit = Column(Float, nullable=True)
-    auto_threshold = Column(Float, default=300.0)
-    auto_anchor_pnl = Column(Float, default=0.0)
-    auto_target_stage = Column(Integer, default=0)
-    # alert_enabled is the master switch, kept in sync with the channels below:
-    # deselecting every channel is how you silence a group.
-    alert_enabled = Column(Boolean, default=True)
-    notify_email = Column(Boolean, default=True)
-    notify_telegram = Column(Boolean, default=True)
-    # The app user who created the group. Only they (and administrators) can
-    # see or change it — unless `shared` is set, which opens it up for viewing
-    # by anyone with dashboard access. Sharing never grants editing.
-    owner = Column(String, nullable=True)           # users.username, NULL = unclaimed
-    shared = Column(Boolean, default=False)
-    status = Column(String, default='draft')        # 'draft' | 'deployed' | 'triggered'
-    trigger_type = Column(String, nullable=True)    # 'TARGET' | 'STOPLOSS'
-    trigger_message = Column(String, nullable=True)
-    triggered_at = Column(DateTime, nullable=True)
-    triggered_pnl = Column(Float, nullable=True)
-    deployed_at = Column(DateTime, nullable=True)
-    # Where the underlying stood, and how wide the market implied it could
-    # travel, at the moment the group was armed. Frozen on deploy and cleared on
-    # undeploy, so the payoff chart can draw the expected range you accepted
-    # alongside today's and show the drift between them. NULL until deployed, or
-    # when the spot could not be established at that moment.
-    baseline_spot = Column(Float, nullable=True)
-    baseline_sigma = Column(Float, nullable=True)   # 1SD in points, at deploy
-    baseline_iv = Column(Float, nullable=True)      # the ATM vol behind it
-    baseline_at = Column(DateTime, nullable=True)
-    last_pnl = Column(Float, default=0.0)           # most recently marked P&L
-    last_evaluated_at = Column(DateTime, nullable=True)
-    notified_at = Column(DateTime, nullable=True)   # last alert sent (dedupe)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-
-class TradeGroupLeg(Base):
-    # One position — or a slice of one — assigned to a group. `quantity` is
-    # signed and matches the position's direction; it may be smaller than the
-    # broker position so the same leg can be split across groups.
-    __tablename__ = 'ztrade_group_legs'
-    __table_args__ = (UniqueConstraint('group_id', 'tradingsymbol', 'product',
-                                       name='uq_ztrade_leg_group_symbol_product'),)
-    id = Column(Integer, primary_key=True)
-    group_id = Column(Integer, ForeignKey('ztrade_groups.id'), nullable=False)
-    tradingsymbol = Column(String, nullable=False)
-    exchange = Column(String, default='NFO')
-    product = Column(String, default='NRML')
-    instrument_token = Column(Integer, nullable=True)
-    quantity = Column(Integer, nullable=False)          # signed qty owned by this group
-    source_quantity = Column(Integer, nullable=False)   # broker qty when added (pro-rate basis)
-    avg_price = Column(Float, default=0.0)              # position avg at add time (reference)
-    frozen_pnl = Column(Float, nullable=True)           # legacy: pre-cycle settled figure
-    # A leg can be closed and the same contract opened again, so its P&L is two
-    # numbers that add up: what is already banked, and what the current position
-    # is doing. `settled_pnl` accumulates every completed cycle;
-    # `settled_override` is the user's correction of that total and wins when
-    # set. `cycle_open` says a position is in progress (so its close is still to
-    # be banked), and `last_mark_pnl` is the most recent live mark — banked as a
-    # fallback if Kite drops the row before we ever see it at quantity 0.
-    settled_pnl = Column(Float, default=0.0)
-    settled_override = Column(Float, nullable=True)
-    # What settled_pnl stood at when the override was typed, so cycles completed
-    # afterwards add to the correction instead of being swallowed by it.
-    settled_base = Column(Float, nullable=True)
-    cycle_open = Column(Boolean, default=False)
-    last_mark_pnl = Column(Float, nullable=True)
-    # How many position cycles have closed on this leg. 0 means nothing has ever
-    # settled — which is not the same as having settled to zero, so the UI can
-    # leave the cell blank instead of claiming a figure.
-    cycles = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-
-class TradeGroupLevelEvent(Base):
-    # Every move an auto group's levels make, in order: armed, each stoploss
-    # step, each target reached, disarmed. Append-only — a level that has been
-    # set is a fact about the trade, so it is recorded rather than overwritten,
-    # and the sequence is what the dashboard draws as the stoploss journey.
-    # Deleted with the group; nothing here outlives it.
-    __tablename__ = 'ztrade_group_level_events'
-    id = Column(Integer, primary_key=True)
-    group_id = Column(Integer, ForeignKey('ztrade_groups.id'), nullable=False,
-                      index=True)
-    at = Column(DateTime, default=datetime.datetime.utcnow)
-    kind = Column(String, nullable=False)   # see zerodha_trades.services.groups
-    # The levels as they stood *after* the event, the P&L that caused it, and the
-    # expected profit they were derived from — so a row explains itself without
-    # having to replay the ones before it.
-    stoploss = Column(Float, nullable=True)
-    target = Column(Float, nullable=True)
-    pnl = Column(Float, nullable=True)
-    expected_profit = Column(Float, nullable=True)
-    note = Column(String, nullable=True)
-
-
-class PositionSnapshot(Base):
-    # Latest polled Kite position, one row per (account, tradingsymbol, product).
-    # Written by the poller so the UI can render without its own broker
-    # round-trip. The account is part of the key: two logins can hold the same
-    # contract with entirely different quantities and averages.
-    __tablename__ = 'ztrade_position_snapshots'
-    __table_args__ = (UniqueConstraint('user_id', 'tradingsymbol', 'product',
-                                       name='uq_ztrade_snapshot_user_symbol_product'),)
-    id = Column(Integer, primary_key=True)
-    user_id = Column(String, nullable=False, default='PC8006')
-    tradingsymbol = Column(String, nullable=False)
-    exchange = Column(String, default='NFO')
-    product = Column(String, default='NRML')
-    instrument_token = Column(Integer, nullable=True)
-    quantity = Column(Integer, default=0)               # 0 = position squared off
-    average_price = Column(Float, default=0.0)
-    last_price = Column(Float, default=0.0)
-    pnl = Column(Float, default=0.0)
-    realised = Column(Float, default=0.0)
-    unrealised = Column(Float, default=0.0)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-
-class TradeGroupSetting(Base):
-    # Single-row settings for the Zerodha Trades poller.
-    __tablename__ = 'ztrade_settings'
-    id = Column(Integer, primary_key=True)
-    poll_seconds = Column(Integer, default=10)
-    poller_enabled = Column(Boolean, default=True)
-    # Polling is confined to NSE trading days, 09:15-15:45 IST. test_mode is the
-    # deliberate override for trying things out off-hours; it is never the
-    # default and the dashboard nags while it is on.
-    test_mode = Column(Boolean, default=False)
-    alert_email = Column(String, nullable=True)
-    last_poll_at = Column(DateTime, nullable=True)
-    last_poll_status = Column(String, nullable=True)
-
-
 # Singleton setup
 engine = None
 SessionLocal = None
 
 # SQLite's default rollback journal gives a writer an exclusive lock on the
 # whole file, so every reader blocks until the write finishes — and with
-# synchronous=FULL each commit waits on an fsync. The poller writes a snapshot
-# per account every few seconds while the web app reads the same file on its own
-# timers, so on a slow disk the two spend their time queueing behind each other
-# and the UI stalls (up to busy_timeout) for something that should take no time.
+# synchronous=FULL each commit waits on an fsync. The cron jobs and the enctoken
+# API write while the web app reads the same file on its own timers, so on a slow
+# disk they spend their time queueing behind each other and the UI stalls (up to
+# busy_timeout) for something that should take no time.
 #
 # WAL fixes it properly: writers append to a side log, readers are never blocked,
 # and one writer at a time is all this app ever has. synchronous=NORMAL is the
 # documented safe pairing — a crash can lose the tail of the last transaction but
-# cannot corrupt the database, which is the right trade for a position snapshot
-# that is refetched seconds later.
+# cannot corrupt the database.
 #
 # journal_mode is persisted in the file header, so it only takes once; the other
 # two are per-connection and must be set on every connect.
@@ -335,30 +171,10 @@ def init_db(db_path='sqlite:///oracle.db'):
     global engine, SessionLocal
     engine = create_engine(db_path, connect_args={"check_same_thread": False})
     event.listen(engine, "connect", _apply_pragmas)
-    _drop_stale_caches()
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     seed_data()
-
-def _drop_stale_caches():
-    """Drop cache tables whose *key* changed, so create_all rebuilds them.
-
-    ``_ensure_columns`` can add a column but not rewrite a UNIQUE constraint,
-    and SQLite cannot alter one in place. ``ztrade_position_snapshots`` gained
-    ``user_id`` in its key when the module went multi-account; it holds nothing
-    but the last poll, so dropping it costs one poll cycle and avoids a rebuild
-    dance. Only ever do this to tables that are pure cache.
-    """
-    from sqlalchemy import inspect, text
-    inspector = inspect(engine)
-    if 'ztrade_position_snapshots' not in inspector.get_table_names():
-        return
-    columns = {c['name'] for c in inspector.get_columns('ztrade_position_snapshots')}
-    if 'user_id' not in columns:
-        with engine.begin() as conn:
-            conn.execute(text("DROP TABLE ztrade_position_snapshots"))
-
 
 def _ensure_columns():
     """Add columns introduced after a table was first created (SQLite create_all
@@ -373,40 +189,6 @@ def _ensure_columns():
         'trades': [('charges', 'FLOAT DEFAULT 0.0'),
                    ('charges_breakdown', 'VARCHAR'),
                    ('pledge', 'BOOLEAN DEFAULT 0')],
-        'ztrade_settings': [('test_mode', 'BOOLEAN DEFAULT 0')],
-        # Pre-multi-account groups all belonged to the master login.
-        # owner/shared arrive NULL and 0: an unowned group is claimable by the
-        # migration, and nothing is shared until somebody says so.
-        # The expected range a group was armed against, frozen on deploy. All
-        # NULL for a group deployed before this existed — deliberately, since
-        # that moment's spot and vol are gone; it takes a baseline on its next
-        # redeploy. See migrations/add_group_baseline.py.
-        'ztrade_groups': [("user_id", "VARCHAR DEFAULT 'PC8006'"),
-                          ('notify_email', 'BOOLEAN DEFAULT 1'),
-                          ('notify_telegram', 'BOOLEAN DEFAULT 1'),
-                          ('owner', 'VARCHAR'),
-                          ('shared', 'BOOLEAN DEFAULT 0'),
-                          ('baseline_spot', 'FLOAT'),
-                          ('baseline_sigma', 'FLOAT'),
-                          ('baseline_iv', 'FLOAT'),
-                          ('baseline_at', 'DATETIME'),
-                          # A group predating the mode had its levels typed by
-                          # hand, which is exactly what 'fixed' means, and the
-                          # auto_* working state is unused on it.
-                          ("levels_mode", "VARCHAR DEFAULT 'fixed'"),
-                          ('auto_expected_profit', 'FLOAT'),
-                          ('auto_threshold', 'FLOAT DEFAULT 300.0'),
-                          ('auto_anchor_pnl', 'FLOAT DEFAULT 0.0'),
-                          ('auto_target_stage', 'INTEGER DEFAULT 0')],
-        # Legs gained a banked/live P&L split so a contract can be closed and
-        # re-opened without losing what the first cycle made. frozen_pnl is
-        # migrated into settled_pnl by migrations/add_settled_pnl.py.
-        'ztrade_group_legs': [('settled_pnl', 'FLOAT DEFAULT 0.0'),
-                              ('settled_override', 'FLOAT'),
-                              ('settled_base', 'FLOAT'),
-                              ('cycle_open', 'BOOLEAN DEFAULT 0'),
-                              ('last_mark_pnl', 'FLOAT'),
-                              ('cycles', 'INTEGER DEFAULT 0')],
         'broker_config': [('owner', 'VARCHAR'),
                           ('password_enc', 'VARCHAR'),
                           ('totp_enc', 'VARCHAR'),

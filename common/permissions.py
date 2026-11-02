@@ -1,6 +1,6 @@
 """Per-page access control for the Streamlit app.
 
-Every page in the app has a key (``"bees.dashboard"``, ``"ztrade.manage"`` …)
+Every page in the app has a key (``"bees.dashboard"``, ``"setup.users"`` …)
 and every user carries a level for each key:
 
 ``none``
@@ -62,11 +62,6 @@ PAGES = [
 
     Page("downloader.download", "📥 Downloader", "Options Download", "⬇️", "options-download",
          help="Read shows download history; edit can start a download."),
-
-    Page("ztrade.dashboard", "📦 Zerodha Trades", "Dashboard", "📊", "ztrade",
-         help="Group P&L cards and position detail."),
-    Page("ztrade.manage", "📦 Zerodha Trades", "Group Management", "🗂️", "ztrade-groups",
-         readable=False, help="Creates groups, sets stoploss/target and tags positions."),
 
     Page("setup.zerodha", "⚙️ Setup", "Zerodha Accounts", "📇", "zerodha-accounts",
          help="Read lists the accounts; edit adds them. A login's password and "

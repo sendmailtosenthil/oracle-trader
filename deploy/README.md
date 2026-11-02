@@ -40,10 +40,7 @@ password and TOTP secret that let the 8:10am job refresh the enctoken by itself.
 An account belongs to the user who added it. Everyone who can open the Setup
 pages sees that it exists — its Kite id, owner, and whether its token is live —
 but only the owner (and administrators) can see or change its password, TOTP
-secret and enctoken, or remove it. Zerodha Trades follows the same line: your
-account tabs are the accounts you added, and a trade group is editable only by
-whoever created it. A group can be shared for others to *view* with a per-group
-toggle, off by default.
+secret and enctoken, or remove it.
 
 The two secrets are encrypted at rest with a key held **outside** the database,
 because the nightly backup uploads the database to Google Drive. The key is
@@ -75,42 +72,8 @@ except the first:
 ```bash
 venv/bin/python -m migrations.add_user_permissions        # logins -> per-page permissions
 venv/bin/python -m migrations.move_zerodha_credentials    # accounts -> owners + encrypted creds
-venv/bin/python -m migrations.add_settled_pnl             # leg P&L -> banked + live
-venv/bin/python -m migrations.add_group_baseline          # groups -> deploy-time SD reference
-venv/bin/python -m migrations.add_group_levels_mode       # groups -> fixed or automatic levels
 ```
 Existing logins become administrators, so nobody is locked out by the upgrade.
-
-`add_group_baseline` records, when a group is deployed, where its underlying
-stood and how far the market implied it could travel before the front expiry.
-The payoff chart draws that frozen range in light grey behind the live one, so
-the gap between their centres is the drift since arming. Nothing is backfilled:
-a group deployed before the upgrade has no honest baseline available, and picks
-one up on its next redeploy.
-
-`add_group_levels_mode` makes the stoploss and target a choice rather than two
-boxes you must fill in. A group is either `fixed` — you type them, nothing else
-moves them — or `auto`, where creating it asks only for a name and the app manages
-the levels from the **expected profit**: the premium the open legs were sold for
-plus whatever the closed ones actually made. The opening stoploss is that whole
-figure and the opening target 50% of it; the stoploss then trails the profit in
-steps of at least ₹300 (per group) and never widens, and reaching a target
-notifies every channel, drops the stoploss to break-even and climbs the ladder
-50% → 70% → 85%, the last rung advising that the trade be closed. Closing a leg or
-adding one re-prices all of it. Typing over either level hands the group to you
-permanently — it becomes a fixed-levels group. Every move is recorded in the new
-`ztrade_group_level_events` table and drawn as the stoploss journey on the
-dashboard, and deleting a group deletes its history with it. Every existing group
-is backfilled to `fixed`, which is what it already was; groups deployed before the
-upgrade have no recorded journey to reconstruct and start one at their next
-arming.
-
-`add_settled_pnl` splits a trade leg's P&L into what closed cycles already made
-and what the position currently held is doing. That is what lets a contract be
-closed and re-opened without losing the first cycle: the two figures add up, the
-banked one survives Zerodha dropping the position from the book, and it can be
-corrected by hand once nothing is running against it. A correction applies to the
-total as it stood when typed, so later cycles still add on top of it.
 
 `ORACLE_ADMIN_USER` / `ORACLE_ADMIN_PASSWORD` in `.env` only bootstrap the first
 administrator on an empty database; after that the database is the source of

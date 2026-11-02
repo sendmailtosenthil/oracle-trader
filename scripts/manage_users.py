@@ -6,9 +6,7 @@ a fresh database.
 
     python scripts/manage_users.py list
     python scripts/manage_users.py add sasi --grant bees.dashboard=read \
-                                            --grant downloader.download=read \
-                                            --grant ztrade.dashboard=edit \
-                                            --grant ztrade.manage=edit
+                                            --grant downloader.download=read
     python scripts/manage_users.py add newadmin --admin
     python scripts/manage_users.py grant sasi --grant bees.dashboard=read
     python scripts/manage_users.py passwd senthil

@@ -11,12 +11,11 @@ acts.
 
 What it does:
   1. ALTER TABLE broker_config ADD COLUMN owner / password_enc / totp_enc /
-     created_at, and ztrade_groups ADD COLUMN owner / shared (if missing).
+     created_at (if missing).
   2. Reads ZERODHA_USER_ID / ZERODHA_PASSWORD / ZERODHA_TOTP_SECRET from ``.env``
      (or the environment) and stores them, encrypted, on the matching account.
-  3. Claims every unowned Zerodha account and trade group for ``--owner``, so
-     the person who has been running the system keeps working exactly as before.
-     Groups stay unshared: sharing is opt-in, per group.
+  3. Claims every unowned Zerodha account for ``--owner``, so the person who
+     has been running the system keeps working exactly as before.
 
 Afterwards, delete ZERODHA_PASSWORD and ZERODHA_TOTP_SECRET from ``.env`` — the
 app no longer reads them once they are stored, and the point of the move is that
@@ -51,8 +50,6 @@ WANTED = {
                       ('password_enc', 'VARCHAR'),
                       ('totp_enc', 'VARCHAR'),
                       ('created_at', 'DATETIME')],
-    'ztrade_groups': [('owner', 'VARCHAR'),
-                      ('shared', 'BOOLEAN DEFAULT 0')],
 }
 
 
@@ -153,14 +150,13 @@ def import_credentials(conn, env, owner, dry_run=False):
 
 
 def claim(conn, owner, dry_run=False):
-    """Give every unowned account and group to ``owner``."""
+    """Give every unowned account to ``owner``."""
     if not owner:
         print("  No administrator found — skipping. Create one first "
               "(`python scripts/manage_users.py list`), then re-run.")
         return
 
-    for table, what in (('broker_config', 'Zerodha account'),
-                        ('ztrade_groups', 'trade group')):
+    for table, what in (('broker_config', 'Zerodha account'),):
         if not _table_exists(conn, table):
             continue
         if not _column_exists(conn, table, 'owner'):
@@ -196,14 +192,6 @@ def report(conn):
         creds = "auto-login stored" if (pw and totp) else "no stored credentials"
         token = "token set" if enc else "no token"
         print(f"  {uid:<10} owner={owner or '—':<12} {creds}, {token}")
-
-    if _table_exists(conn, 'ztrade_groups'):
-        rows = list(conn.execute(
-            "SELECT name, user_id, owner, shared FROM ztrade_groups ORDER BY id"))
-        print(f"\nTrade groups ({len(rows)}):")
-        for name, uid, owner, shared in rows:
-            flag = " · shared" if shared else ""
-            print(f"  {name:<24} {uid:<10} owner={owner or '—'}{flag}")
 
 
 def main():

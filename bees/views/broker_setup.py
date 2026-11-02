@@ -64,8 +64,8 @@ def render(db):
 
     st.markdown(f"#### Master account — `{MASTER_USER_ID}`")
     st.caption(
-        "Used by every automated job: downloader, the bot and the "
-        "position poller. Its User ID is fixed."
+        "Used by every automated job: the downloader and the bot. "
+        "Its User ID is fixed."
     )
 
     if master is None:

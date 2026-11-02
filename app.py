@@ -3,7 +3,7 @@
 Thin orchestration layer: page config, authentication, sidebar navigation, and
 dispatch to per-module page renderers. Cross-module infrastructure lives in
 ``common`` (database, Zerodha client, notifications, permissions); feature logic
-lives in the ``bees``, ``downloader`` and ``zerodha_trades`` modules.
+lives in the ``bees`` and ``downloader`` modules.
 
 Navigation uses Streamlit's native ``st.navigation`` so each module's pages
 render as clickable links grouped under a section header. Which links appear is
@@ -23,8 +23,6 @@ from bees.auth import require_auth, logout
 from bees.styles import inject_global_css
 from bees.views import dashboard, operations, ledger, broker_setup
 from downloader.views import page as downloader_page
-from zerodha_trades.views import manage as ztrade_manage
-from zerodha_trades.views import dashboard as ztrade_dashboard
 from admin import users as admin_users
 from admin import zerodha_accounts as admin_zerodha
 
@@ -80,14 +78,6 @@ def _options_download():
     downloader_page.render(db)
 
 
-def _ztrade_dashboard():
-    ztrade_dashboard.render(db)
-
-
-def _ztrade_manage():
-    ztrade_manage.render(db)
-
-
 def _broker_setup():
     broker_setup.render(db)
 
@@ -105,8 +95,6 @@ RENDERERS = {
     "bees.operations": _operations,
     "bees.ledger": _ledger,
     "downloader.download": _options_download,
-    "ztrade.dashboard": _ztrade_dashboard,
-    "ztrade.manage": _ztrade_manage,
     "setup.zerodha": _zerodha_accounts,
     "setup.broker": _broker_setup,
     "setup.users": _user_management,

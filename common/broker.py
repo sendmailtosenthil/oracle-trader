@@ -74,7 +74,7 @@ def clear_token_cache():
 #
 # The **master** account (always PC8006) keeps the bare ``broker_name`` of
 # 'ZERODHA'; every other account is filed under 'ZERODHA:<USER_ID>'. That layout
-# is deliberate: all the automated jobs (downloader, bot, poller)
+# is deliberate: all the automated jobs (downloader, bot)
 # query ``broker_name == 'ZERODHA'``, so they keep resolving to the master
 # account untouched, while the extra accounts sit alongside without a schema
 # change or a migration.
@@ -266,19 +266,6 @@ def visible_accounts(db):
     list. What differs is whether the secrets are shown: see :func:`can_manage`.
     """
     return list_accounts(db)
-
-
-def my_accounts(db):
-    """Just the accounts the signed-in user may manage (all of them, for admins).
-
-    This is the set that scopes the Zerodha Trades tabs: you work the books of
-    the logins you added.
-    """
-    return [row for row in list_accounts(db) if can_manage(row)]
-
-
-def my_user_ids(db):
-    return [normalise_user_id(r.user_id) for r in my_accounts(db)]
 
 
 def delete_account(db, user_id):
